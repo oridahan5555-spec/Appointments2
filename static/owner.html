@@ -37,10 +37,16 @@
           <h1 id="pageTitle">כניסה לניהול</h1>
           <p id="pageDescription">גישה מאובטחת לבעלת העסק.</p>
         </div>
-        <a class="btn btn--secondary btn--compact" href="/">
-          <svg class="icon" aria-hidden="true"><use href="/icons.svg#home"></use></svg>
-          <span>עמוד הלקוחות</span>
-        </a>
+        <div class="owner-topbar__actions">
+          <button id="logout" class="btn btn--ghost btn--compact" type="button" hidden>
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg#log-out"></use></svg>
+            <span>יציאה</span>
+          </button>
+          <a class="btn btn--secondary btn--compact" href="/">
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg#home"></use></svg>
+            <span>עמוד הלקוחות</span>
+          </a>
+        </div>
       </header>
 
       <section class="login-card" aria-labelledby="loginTitle">
@@ -56,7 +62,7 @@
           <button id="sendCode" class="btn btn--primary btn--wide" type="button">שלחי לי קוד</button>
           <div id="ownerCodeField" class="field" hidden>
             <label for="code">הקוד שקיבלת</label>
-            <input id="code" class="input otp__box" inputmode="numeric" autocomplete="one-time-code" maxlength="4" pattern="[0-9]{4}" placeholder="0000">
+            <input id="code" class="input otp__box" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="000000">
             <button id="verify" class="btn btn--primary btn--wide" type="button">כניסה לניהול</button>
           </div>
           <p id="loginStatus" class="field-message" aria-live="polite"></p>
@@ -77,6 +83,20 @@
     <div class="dialog-actions">
       <button id="confirmCancel" class="btn btn--secondary" type="button">חזרה</button>
       <button id="confirmAccept" class="btn btn--danger" type="button">אישור</button>
+    </div>
+  </dialog>
+
+  <dialog id="rescheduleDialog" class="confirm-dialog" aria-labelledby="rescheduleTitle">
+    <div class="confirm-dialog__icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg#calendar-days"></use></svg></div>
+    <h2 id="rescheduleTitle">שינוי מועד</h2>
+    <div class="form-grid">
+      <label class="field"><span class="field__label">תאריך</span><input id="rescheduleDate" class="input ltr" type="date" required></label>
+      <label class="field"><span class="field__label">שעה</span><input id="rescheduleTime" class="input ltr" type="time" required></label>
+    </div>
+    <p id="rescheduleStatus" class="field-message" aria-live="polite"></p>
+    <div class="dialog-actions">
+      <button id="rescheduleCancel" class="btn btn--secondary" type="button">חזרה</button>
+      <button id="rescheduleSave" class="btn btn--primary" type="button"><span>שמירת מועד</span></button>
     </div>
   </dialog>
 

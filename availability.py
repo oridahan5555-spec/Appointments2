@@ -1,5 +1,5 @@
 import re
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import config
@@ -40,9 +40,23 @@ def to_unix(day: str, time_s: str, duration: int):
     validate_time(time_s)
     if duration < 1 or duration > 480:
         raise ValueError("invalid duration")
-    start = datetime.fromisoformat(f"{day}T{time_s}:00").replace(tzinfo=TZ)
-    end = start + timedelta(minutes=duration)
-    return int(start.timestamp()), int(end.timestamp())
+    naive = datetime.fromisoformat(f"{day}T{time_s}:00")
+    candidates = []
+    for fold in (0, 1):
+        aware = naive.replace(tzinfo=TZ, fold=fold)
+        round_trip = aware.astimezone(UTC).astimezone(TZ).replace(tzinfo=None)
+        if round_trip == naive:
+            candidates.append(aware)
+    if not candidates:
+        raise ValueError("nonexistent local time")
+    if len(candidates) == 2 and candidates[0].utcoffset() != candidates[1].utcoffset():
+        raise ValueError("ambiguous local time")
+    starts = int(candidates[0].timestamp())
+    return starts, starts + duration * 60
+
+
+def local_today() -> date:
+    return datetime.now(TZ).date()
 
 
 def weekday_sun0(day: date) -> int:
@@ -73,7 +87,12 @@ def within_working_hours(conn, day_s, time_s, duration):
     if not hours_row or not hours_row["open_time"] or not hours_row["close_time"]:
         return False
     start = parse_minutes(time_s)
-    return start >= parse_minutes(hours_row["open_time"]) and start + duration <= parse_minutes(hours_row["close_time"])
+    opening = parse_minutes(hours_row["open_time"])
+    closing = parse_minutes(hours_row["close_time"])
+    interval = int(hours_row.get("slot_interval_minutes") or 15)
+    if interval < 5 or interval > 240:
+        interval = 15
+    return start >= opening and start + duration <= closing and (start - opening) % interval == 0
 
 
 def available_slots(conn, date_from: str, date_to: str, duration: int):
@@ -85,10 +104,18 @@ def available_slots(conn, date_from: str, date_to: str, duration: int):
     start_d, end_d = date.fromisoformat(date_from), date.fromisoformat(date_to)
     if end_d < start_d:
         raise ValueError("invalid date range")
-    max_end = date.today() + timedelta(days=settings["max_days_ahead"])
+    if (end_d - start_d).days > 31:
+        raise ValueError("date range is too large")
+    today = local_today()
+    start_d = max(start_d, today)
+    max_end = today + timedelta(days=settings["max_days_ahead"])
     end_d = min(end_d, max_end)
+    if start_d > end_d:
+        return []
     hours = {h["day_of_week"]: h for h in db.working_hours(conn)}
-    overrides = {o["override_date"]: o for o in db.overrides_between(conn, date_from, end_d.isoformat())}
+    overrides = {
+        o["override_date"]: o for o in db.overrides_between(conn, date_from, end_d.isoformat())
+    }
     min_start = db.now() + settings["min_lead_minutes"] * 60
     out = []
     day = start_d
@@ -104,8 +131,16 @@ def available_slots(conn, date_from: str, date_to: str, duration: int):
                 step = 15
             while t + duration <= close:
                 time_s = time_text(t)
-                starts, ends = to_unix(day_s, time_s, duration)
-                if starts >= min_start and not db.booking_overlap(conn, starts, ends) and not db.block_overlap(conn, starts, ends):
+                try:
+                    starts, ends = to_unix(day_s, time_s, duration)
+                except ValueError:
+                    t += step
+                    continue
+                if (
+                    starts >= min_start
+                    and not db.booking_overlap(conn, starts, ends)
+                    and not db.block_overlap(conn, starts, ends)
+                ):
                     day_slots.append(time_s)
                 t += step
         if day_slots:

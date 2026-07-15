@@ -5,6 +5,12 @@ __pycache__/
 data/*.sqlite*
 data/uploads/
 *.log
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vercel/
+htmlcov/
 test-results/
 playwright-report/
 *.png

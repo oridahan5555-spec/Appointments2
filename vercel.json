@@ -1,4 +1,5 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
   "builds": [
     {
@@ -8,7 +9,8 @@
         "maxLambdaSize": "15mb",
         "includeFiles": [
           "static/**",
-          "schema.sql"
+          "schema.sql",
+          "schema_postgres.sql"
         ]
       }
     }
@@ -17,6 +19,12 @@
     {
       "src": "/(.*)",
       "dest": "api/index.py"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/reminders",
+      "schedule": "*/15 * * * *"
     }
   ]
 }

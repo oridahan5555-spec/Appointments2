@@ -1,7 +1,12 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
-const state = JSON.parse(sessionStorage.getItem("bookingDraft") || "{}");
+let state = {};
+try {
+  state = JSON.parse(sessionStorage.getItem("bookingDraft") || "{}");
+} catch {
+  sessionStorage.removeItem("bookingDraft");
+}
 state.services = Array.isArray(state.services) ? state.services : [];
 state.mode = state.mode || "first";
 
@@ -9,6 +14,8 @@ let business = { settings: {}, services: [] };
 let verified = false;
 let isNewCustomer = true;
 let currentStep = 1;
+let csrfToken = null;
+let slotsRequestId = 0;
 
 const statusLabels = {
   pending: "ממתין לאישור",
@@ -39,19 +46,30 @@ function saveDraft() {
 }
 
 function localIso(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jerusalem",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
 }
 
 function parseDate(value) {
   const [year, month, day] = value.split("-").map(Number);
-  return new Date(year, month - 1, day, 12);
+  return new Date(Date.UTC(year, month - 1, day, 12));
+}
+
+function addDays(value, days) {
+  const date = parseDate(value);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function formatDate(value, includeYear = false) {
   return new Intl.DateTimeFormat("he-IL", {
+    timeZone: "Asia/Jerusalem",
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -69,9 +87,17 @@ function errorMessage(error) {
 }
 
 async function api(path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const headers = { ...(options.headers || {}) };
+  if (options.body) headers["content-type"] = "application/json";
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
+    headers["x-csrf-token"] = csrfToken;
+  }
   const response = await fetch(path, {
     ...options,
-    headers: options.body ? { "content-type": "application/json", ...(options.headers || {}) } : options.headers,
+    method,
+    headers,
+    credentials: "same-origin",
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
@@ -80,6 +106,10 @@ async function api(path, options = {}) {
       : payload.detail;
     const error = new Error(detail || "הפעולה לא הושלמה");
     error.status = response.status;
+    if (response.status === 401) {
+      verified = false;
+      csrfToken = null;
+    }
     throw error;
   }
   return response.json();
@@ -124,7 +154,7 @@ function setStep(step) {
   const content = {
     1: ["מה תרצי לקבוע?", "אפשר לבחור שירות אחד או כמה שירותים."],
     2: ["מתי נוח לך?", "בחרי את המועד שמתאים לך מתוך השעות הפנויות."],
-    3: ["כמעט סיימנו", "נשאר לאמת את הטלפון ולאשר את הפרטים."],
+    3: ["כמעט סיימנו", "נשאר לאמת את כתובת המייל ולאשר את הפרטים."],
   };
   $("#flowTitle").textContent = content[step][0];
   $("#flowHint").textContent = content[step][1];
@@ -228,17 +258,18 @@ function renderSlotSkeletons() {
 }
 
 async function loadSlots() {
+  const requestId = ++slotsRequestId;
   const totals = selectedTotals();
   if (!totals.duration) return;
   const start = state.mode === "day" ? $("#dayPick").value : localIso();
   if (!start) return;
-  const endDate = parseDate(start);
-  endDate.setDate(endDate.getDate() + (state.mode === "day" ? 0 : 21));
+  const end = addDays(start, state.mode === "day" ? 0 : 21);
   const box = $("#slots");
   box.setAttribute("aria-busy", "true");
   renderSlotSkeletons();
   try {
-    const data = await api(`/api/slots?date_from=${start}&date_to=${localIso(endDate)}&duration=${totals.duration}`);
+    const data = await api(`/api/slots?date_from=${start}&date_to=${end}&duration=${totals.duration}`);
+    if (requestId !== slotsRequestId) return;
     box.replaceChildren();
     let remaining = state.mode === "day" ? Number.POSITIVE_INFINITY : 16;
     data.days.forEach((day) => {
@@ -272,12 +303,13 @@ async function loadSlots() {
       ));
     }
   } catch (error) {
+    if (requestId !== slotsRequestId) return;
     box.replaceChildren();
     const banner = create("div", "banner banner--error");
     banner.append(icon("circle-alert"), create("span", "", errorMessage(error)));
     box.append(banner);
   } finally {
-    box.setAttribute("aria-busy", "false");
+    if (requestId === slotsRequestId) box.setAttribute("aria-busy", "false");
   }
 }
 
@@ -337,6 +369,7 @@ async function verifyCode() {
       method: "POST",
       body: JSON.stringify({ email: $("#email").value, code: $("#code").value }),
     });
+    csrfToken = result.csrf_token;
     isNewCustomer = result.is_new;
     markVerified($("#email").value);
   } catch (error) {
@@ -387,7 +420,8 @@ async function createBooking() {
 }
 
 function bookingCard(booking) {
-  const services = JSON.parse(booking.services_snapshot || "[]");
+  let services = [];
+  try { services = JSON.parse(booking.services_snapshot || "[]"); } catch { services = []; }
   const card = create("article", "booking-card");
   const header = create("div", "booking-card__header");
   const date = create("div", "booking-card__date");
@@ -406,12 +440,15 @@ function bookingCard(booking) {
     cancel.type = "button";
     cancel.addEventListener("click", async () => {
       if (!(await confirmAction())) return;
+      setBusy(cancel, true, "מבטלת...");
       try {
-        await api(`/api/bookings/${booking.id}/cancel`, { method: "POST" });
-        toast("התור בוטל.");
-        loadMyBookings();
+        const result = await api(`/api/bookings/${booking.id}/cancel`, { method: "POST" });
+        toast(result.warning || "התור בוטל.", result.warning ? "error" : "success");
+        await loadMyBookings();
       } catch (error) {
         toast(errorMessage(error), "error");
+      } finally {
+        setBusy(cancel, false);
       }
     });
     actions.append(cancel);
@@ -420,8 +457,15 @@ function bookingCard(booking) {
     const hide = create("button", "btn btn--ghost btn--compact", "הסתרה מהרשימה");
     hide.type = "button";
     hide.addEventListener("click", async () => {
-      await api(`/api/bookings/${booking.id}/hide`, { method: "POST" });
-      loadMyBookings();
+      setBusy(hide, true, "מסתירה...");
+      try {
+        await api(`/api/bookings/${booking.id}/hide`, { method: "POST" });
+        await loadMyBookings();
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      } finally {
+        setBusy(hide, false);
+      }
     });
     actions.append(hide);
   }
@@ -432,9 +476,16 @@ function bookingCard(booking) {
       const button = create("button", answer === "confirmed" ? "btn btn--primary btn--compact" : "btn btn--secondary btn--compact", label);
       button.type = "button";
       button.addEventListener("click", async () => {
-        await api(`/api/bookings/${booking.id}/arrival`, { method: "POST", body: JSON.stringify({ answer }) });
-        toast("התשובה נשמרה.");
-        loadMyBookings();
+        setBusy(button, true, "שומרת...");
+        try {
+          await api(`/api/bookings/${booking.id}/arrival`, { method: "POST", body: JSON.stringify({ answer }) });
+          toast("התשובה נשמרה.");
+          await loadMyBookings();
+        } catch (error) {
+          toast(errorMessage(error), "error");
+        } finally {
+          setBusy(button, false);
+        }
       });
       arrival.append(button);
     });
@@ -459,7 +510,7 @@ async function loadMyBookings() {
     data.bookings.forEach((booking) => list.append(bookingCard(booking)));
   } catch (error) {
     modal.close();
-    toast("כדי לראות את התורים שלך, אמתִי קודם את הטלפון בזמן קביעת תור.", "error");
+    toast("כדי לראות את התורים שלך, אמתִי קודם את כתובת המייל בזמן קביעת תור.", "error");
   }
 }
 
@@ -480,9 +531,7 @@ async function boot() {
     state.date = state.date || localIso();
     $("#dayPick").value = state.date;
     $("#dayPick").min = localIso();
-    const lastDay = new Date();
-    lastDay.setDate(lastDay.getDate() + Number(business.settings.max_days_ahead || 60));
-    $("#dayPick").max = localIso(lastDay);
+    $("#dayPick").max = addDays(localIso(), Number(business.settings.max_days_ahead || 60));
     $$('[data-mode]').forEach((item) => item.setAttribute("aria-pressed", String(item.dataset.mode === state.mode)));
     $("#dateField").hidden = state.mode !== "day";
     renderBusiness();
@@ -494,7 +543,9 @@ async function boot() {
     $("#services").append(banner);
   }
   try {
-    const me = await api("/api/me");
+    const me = await api("/api/session");
+    if (!me.authenticated) return;
+    csrfToken = me.csrf_token;
     verified = true;
     isNewCustomer = !me.name;
     markVerified(me.email);

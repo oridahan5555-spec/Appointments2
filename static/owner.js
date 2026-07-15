@@ -2,6 +2,7 @@ const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 
 let activeTab = "bookings";
+let csrfToken = null;
 
 const tabMeta = {
   bookings: ["תורים", "כל התורים הקרובים, האישורים והעדכונים במקום אחד."],
@@ -40,19 +41,30 @@ function create(tag, className, text) {
 }
 
 function localIso(date = new Date()) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jerusalem",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const value = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${value.year}-${value.month}-${value.day}`;
 }
 
 function parseDate(value) {
   const [year, month, day] = value.split("-").map(Number);
-  return new Date(year, month - 1, day, 12);
+  return new Date(Date.UTC(year, month - 1, day, 12));
+}
+
+function addDays(value, days) {
+  const date = parseDate(value);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function formatDate(value, includeYear = false) {
   return new Intl.DateTimeFormat("he-IL", {
+    timeZone: "Asia/Jerusalem",
     weekday: "long",
     day: "numeric",
     month: "long",
@@ -70,9 +82,17 @@ function errorMessage(error) {
 }
 
 async function api(path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const headers = { ...(options.headers || {}) };
+  if (options.body) headers["content-type"] = "application/json";
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
+    headers["x-csrf-token"] = csrfToken;
+  }
   const response = await fetch(path, {
     ...options,
-    headers: options.body ? { "content-type": "application/json", ...(options.headers || {}) } : options.headers,
+    method,
+    headers,
+    credentials: "same-origin",
   });
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
@@ -81,6 +101,9 @@ async function api(path, options = {}) {
       : payload.detail;
     const error = new Error(detail || "הפעולה לא הושלמה");
     error.status = response.status;
+    if ([401, 403].includes(response.status) && path.startsWith("/api/owner/")) {
+      showLogin();
+    }
     throw error;
   }
   return response.json();
@@ -92,6 +115,17 @@ function setBusy(button, busy, busyLabel = "שומרת...") {
   button.disabled = busy;
   button.classList.toggle("is-loading", busy);
   (label || button).textContent = busy ? busyLabel : button.dataset.label;
+}
+
+async function runAction(buttonNode, busyLabel, action) {
+  setBusy(buttonNode, true, busyLabel);
+  try {
+    await action();
+  } catch (error) {
+    toast(errorMessage(error), "error");
+  } finally {
+    setBusy(buttonNode, false);
+  }
 }
 
 function toast(message, tone = "success") {
@@ -204,7 +238,19 @@ function showAdmin() {
   $("#admin").hidden = false;
   $("#ownerNav").hidden = false;
   $("#ownerSidebarFooter").hidden = false;
+  $("#logout").hidden = false;
   switchTab(activeTab);
+}
+
+function showLogin() {
+  csrfToken = null;
+  document.body.classList.remove("is-authenticated");
+  $(".login-card").hidden = false;
+  $("#admin").hidden = true;
+  $("#ownerNav").hidden = true;
+  $("#ownerSidebarFooter").hidden = true;
+  $("#logout").hidden = true;
+  $("#pageTitle").textContent = "כניסה לניהול";
 }
 
 function switchTab(tab) {
@@ -259,23 +305,55 @@ async function updateBookingStatus(booking, status, actionButton) {
   if (!(await confirmAction(messages[status], status === "approved" ? "אישור תור" : "אישור פעולה", status === "approved" ? "אישור" : "המשך"))) return;
   setBusy(actionButton, true, "מעדכנת...");
   try {
-    await api(`/api/owner/bookings/${booking.id}/status`, { method: "POST", body: JSON.stringify({ status }) });
-    toast(status === "approved" ? "התור אושר והיומן עודכן." : "סטטוס התור עודכן.");
+    const result = await api(`/api/owner/bookings/${booking.id}/status`, { method: "POST", body: JSON.stringify({ status }) });
+    toast(result.warning || (status === "approved" ? "התור אושר והיומן עודכן." : "סטטוס התור עודכן."), result.warning ? "error" : "success");
     await renderBookings();
   } catch (error) {
     toast(errorMessage(error), "error");
+  } finally {
     setBusy(actionButton, false);
   }
 }
 
+function openReschedule(booking) {
+  const dialog = $("#rescheduleDialog");
+  const dateInput = $("#rescheduleDate");
+  const timeInput = $("#rescheduleTime");
+  const save = $("#rescheduleSave");
+  dateInput.value = booking.booking_date;
+  dateInput.min = localIso();
+  timeInput.value = booking.booking_time;
+  $("#rescheduleStatus").textContent = "";
+  dialog.showModal();
+  $("#rescheduleCancel").onclick = () => dialog.close();
+  save.onclick = async () => {
+    if (!dateInput.reportValidity() || !timeInput.reportValidity()) return;
+    setBusy(save, true);
+    try {
+      const result = await api(`/api/owner/bookings/${booking.id}/schedule`, {
+        method: "PUT",
+        body: JSON.stringify({ date: dateInput.value, time: timeInput.value }),
+      });
+      dialog.close();
+      toast(result.warning || "מועד התור עודכן.", result.warning ? "error" : "success");
+      await renderBookings();
+    } catch (error) {
+      $("#rescheduleStatus").textContent = errorMessage(error);
+    } finally {
+      setBusy(save, false);
+    }
+  };
+}
+
 function bookingCard(booking) {
-  const services = JSON.parse(booking.services_snapshot || "[]");
+  let services = [];
+  try { services = JSON.parse(booking.services_snapshot || "[]"); } catch { services = []; }
   const card = create("article", "owner-booking-card");
   const dateBlock = create("div", "owner-booking-card__date");
   dateBlock.append(
-    create("span", "", new Intl.DateTimeFormat("he-IL", { weekday: "short" }).format(parseDate(booking.booking_date))),
-    create("strong", "", String(parseDate(booking.booking_date).getDate())),
-    create("small", "", new Intl.DateTimeFormat("he-IL", { month: "short" }).format(parseDate(booking.booking_date)))
+    create("span", "", new Intl.DateTimeFormat("he-IL", { weekday: "short", timeZone: "Asia/Jerusalem" }).format(parseDate(booking.booking_date))),
+    create("strong", "", String(Number(booking.booking_date.slice(-2)))),
+    create("small", "", new Intl.DateTimeFormat("he-IL", { month: "short", timeZone: "Asia/Jerusalem" }).format(parseDate(booking.booking_date)))
   );
   const content = create("div", "owner-booking-card__content");
   const top = create("div", "owner-booking-card__top");
@@ -297,24 +375,29 @@ function bookingCard(booking) {
     actions.append(approve, reject);
   }
   if (["pending", "approved"].includes(booking.status)) {
+    const reschedule = button("שינוי מועד", () => openReschedule(booking), { className: "btn--secondary btn--compact", icon: "calendar-days" });
     const cancel = button("ביטול", () => updateBookingStatus(booking, "cancelled", cancel), { className: "btn--ghost btn--compact" });
-    actions.append(cancel);
+    actions.append(reschedule, cancel);
   }
   if (booking.status === "approved") {
     const arrival = button("בקשת אישור הגעה", async () => {
+      setBusy(arrival, true, "שולחת...");
       try {
         await api(`/api/owner/bookings/${booking.id}/request-arrival`, { method: "POST" });
         toast("בקשת ההגעה נשלחה ללקוחה.");
-        renderBookings();
+        await renderBookings();
       } catch (error) { toast(errorMessage(error), "error"); }
+      finally { setBusy(arrival, false); }
     }, { className: "btn--secondary btn--compact", icon: "send" });
     const noShow = button("לא הגיעה", async () => {
       if (!(await confirmAction("לסמן שהלקוחה לא הגיעה? הפעולה תעדכן גם את מונה אי־ההגעה שלה.", "סימון אי־הגעה", "סימון"))) return;
+      setBusy(noShow, true, "שומרת...");
       try {
         await api(`/api/owner/bookings/${booking.id}/no-show`, { method: "POST" });
         toast("אי־ההגעה נרשמה.");
-        renderBookings();
+        await renderBookings();
       } catch (error) { toast(errorMessage(error), "error"); }
+      finally { setBusy(noShow, false); }
     }, { className: "btn--ghost btn--compact" });
     actions.append(arrival, noShow);
   }
@@ -332,7 +415,7 @@ function detailItem(iconName, text) {
 
 async function renderBookings() {
   const today = localIso();
-  const data = await api(`/api/owner/bookings?date_from=${today}&date_to=2099-12-31`);
+  const data = await api(`/api/owner/bookings?date_from=${today}&date_to=${addDays(today, 365)}`);
   const pending = data.bookings.filter((booking) => booking.status === "pending").length;
   const todayCount = data.bookings.filter((booking) => booking.booking_date === today).length;
   const approved = data.bookings.filter((booking) => booking.status === "approved").length;
@@ -385,16 +468,18 @@ function serviceForm(service = {}) {
         body: JSON.stringify(servicePayload(form)),
       });
       toast(service.id ? "השירות נשמר." : "השירות נוסף.");
-      renderServices();
+      await renderServices();
     } catch (error) { toast(errorMessage(error), "error"); setBusy(save, false); }
   }, { className: "btn--primary btn--compact", icon: service.id ? "save" : "plus" });
   actions.append(save);
   if (service.id) {
     const remove = button("מחיקה", async () => {
       if (!(await confirmAction("למחוק את השירות? תורים קיימים ימשיכו להציג את פרטי השירות שנשמרו בהם.", "מחיקת שירות", "מחיקה"))) return;
-      await api(`/api/owner/services/${service.id}`, { method: "DELETE" });
-      toast("השירות נמחק.");
-      renderServices();
+      await runAction(remove, "מוחקת...", async () => {
+        await api(`/api/owner/services/${service.id}`, { method: "DELETE" });
+        toast("השירות נמחק.");
+        await renderServices();
+      });
     }, { className: "btn--ghost btn--compact", icon: "trash" });
     actions.append(remove);
   }
@@ -505,7 +590,7 @@ function overrideForm() {
         }),
       });
       toast("היום המיוחד נוסף.");
-      renderOverrides();
+      await renderOverrides();
     } catch (error) { toast(errorMessage(error), "error"); setBusy(save, false); }
   }, { className: "btn--primary", icon: "plus" });
   form.append(grid, closed, save);
@@ -537,9 +622,11 @@ async function renderOverrides() {
     if (item.internal_note) copy.append(create("small", "", item.internal_note));
     const remove = button("מחיקה", async () => {
       if (!(await confirmAction("למחוק את היום המיוחד? המערכת תחזור לשעות הפעילות הקבועות.", "מחיקת יום מיוחד", "מחיקה"))) return;
-      await api(`/api/owner/overrides/${item.override_date}`, { method: "DELETE" });
-      toast("היום המיוחד נמחק.");
-      renderOverrides();
+      await runAction(remove, "מוחקת...", async () => {
+        await api(`/api/owner/overrides/${item.override_date}`, { method: "DELETE" });
+        toast("היום המיוחד נמחק.");
+        await renderOverrides();
+      });
     }, { className: "btn--ghost btn--compact", icon: "trash" });
     row.append(mark, copy, remove);
     list.append(row);
@@ -572,7 +659,7 @@ function blockForm() {
         }),
       });
       toast("הזמן נחסם ביומן.");
-      renderBlocks();
+      await renderBlocks();
     } catch (error) { toast(errorMessage(error), "error"); setBusy(save, false); }
   }, { className: "btn--primary", icon: "ban" });
   form.append(grid, save);
@@ -604,9 +691,11 @@ async function renderBlocks() {
     if (item.internal_note) copy.append(create("small", "", item.internal_note));
     const remove = button("מחיקה", async () => {
       if (!(await confirmAction("להסיר את החסימה? הזמן עשוי לחזור ולהופיע כפנוי.", "הסרת חסימה", "הסרה"))) return;
-      await api(`/api/owner/blocks/${item.id}`, { method: "DELETE" });
-      toast("החסימה הוסרה.");
-      renderBlocks();
+      await runAction(remove, "מסירה...", async () => {
+        await api(`/api/owner/blocks/${item.id}`, { method: "DELETE" });
+        toast("החסימה הוסרה.");
+        await renderBlocks();
+      });
     }, { className: "btn--ghost btn--compact", icon: "trash" });
     row.append(mark, copy, remove);
     list.append(row);
@@ -715,19 +804,33 @@ async function renderSettings() {
   bookingSection.append(bookingFields);
   const integrationsSection = create("section", "settings-section");
   const googleAction = google.oauth_ready
-    ? button(google.connected ? "חיבור מחדש" : "חיבור Google Calendar", () => { window.location.href = "/api/owner/google/connect"; }, { className: google.connected ? "btn--secondary btn--compact" : "btn--primary btn--compact", icon: "calendar-check" })
+    ? button(google.connected ? "חיבור מחדש" : "חיבור Google Calendar", async () => {
+      setBusy(googleAction, true);
+      try {
+        const result = await api("/api/owner/google/connect", { method: "POST" });
+        window.location.assign(result.authorization_url);
+      } catch (error) {
+        toast(errorMessage(error), "error");
+        setBusy(googleAction, false);
+      }
+    }, { className: google.connected ? "btn--secondary btn--compact" : "btn--primary btn--compact", icon: "calendar-check" })
     : null;
   integrationsSection.append(sectionHeader("חיבורים", google.connected ? `Google Calendar מחובר ליומן ${google.calendar_id}.` : "חברי את Google Calendar כדי שתורים מאושרים ייכנסו ליומן אוטומטית.", googleAction));
+  if (google.failed_syncs) {
+    integrationsSection.append(errorBanner(`${google.failed_syncs} תורים ממתינים לסנכרון עם Google Calendar.`));
+  }
   if (google.connected) {
     const disconnect = button("ניתוק", async () => {
       if (!(await confirmAction("לנתק את Google Calendar? תורים חדשים לא ייכנסו ליומן עד לחיבור מחדש.", "ניתוק Google Calendar", "ניתוק"))) return;
-      await api("/api/owner/google/disconnect", { method: "POST" });
-      toast("Google Calendar נותק.");
-      renderSettings();
+      await runAction(disconnect, "מנתקת...", async () => {
+        await api("/api/owner/google/disconnect", { method: "POST" });
+        toast("Google Calendar נותק.");
+        await renderSettings();
+      });
     }, { className: "btn--ghost btn--compact" });
     integrationsSection.append(createActionBar(disconnect));
   } else if (!google.oauth_ready) {
-    integrationsSection.append(errorBanner("חסרים GOOGLE_CLIENT_ID או GOOGLE_CLIENT_SECRET בקובץ .env."));
+    integrationsSection.append(errorBanner("חיבור Google Calendar עדיין לא הוגדר בשרת."));
   }
   const save = button("שמירת הגדרות", async () => {
     if (!form.reportValidity()) return;
@@ -781,11 +884,12 @@ async function verifyCode() {
   const buttonNode = $("#verify");
   setBusy(buttonNode, true, "בודקת...");
   try {
-    const result = await api("/api/auth/verify", {
+    const result = await api("/api/auth/verify-owner", {
       method: "POST",
       body: JSON.stringify({ email: $("#email").value, code: $("#code").value }),
     });
     if (result.role !== "owner") throw new Error("כתובת המייל הזו אינה מורשית להיכנס לניהול.");
+    csrfToken = result.csrf_token;
     showAdmin();
   } catch (error) {
     $("#loginStatus").textContent = errorMessage(error);
@@ -798,7 +902,18 @@ async function verifyCode() {
 $$('[data-tab]').forEach((item) => item.addEventListener("click", () => switchTab(item.dataset.tab)));
 $("#sendCode").addEventListener("click", requestCode);
 $("#verify").addEventListener("click", verifyCode);
+$("#logout").addEventListener("click", async () => {
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+  } finally {
+    showLogin();
+  }
+});
 
-api("/api/me")
-  .then((me) => { if (me.role === "owner") showAdmin(); })
+api("/api/session")
+  .then((me) => {
+    if (!me.authenticated) return;
+    csrfToken = me.csrf_token;
+    if (me.role === "owner") showAdmin();
+  })
   .catch(() => {});

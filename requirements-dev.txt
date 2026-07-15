@@ -1,0 +1,8 @@
+-r requirements.txt
+httpx2==2.7.0
+pytest==9.0.3
+pytest-cov==6.2.1
+ruff==0.15.21
+mypy==1.20.2
+pip-audit==2.10.1
+playwright==1.61.0

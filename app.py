@@ -1,34 +1,42 @@
-import json
+import logging
 import re
 import secrets
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, timedelta
+from urllib.parse import urlparse
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Request, Response, UploadFile, File
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 import auth
 import availability
+import calendar_sync
 import config
 import db
 import google_calendar
 import mailer
+import notifications
+import storage
+
+logger = logging.getLogger("booking")
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    config.validate_runtime_config()
     db.init_db()
-    config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    if not config.OWNER_EMAIL:
-        raise RuntimeError("OWNER_EMAIL must be configured")
-    if config.MAIL_PROVIDER != "mailjet":
-        raise RuntimeError("MAIL_PROVIDER must be mailjet")
+    if not config.VERCEL:
+        config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     yield
 
 
 app = FastAPI(title="Booking", docs_url=None, redoc_url=None, lifespan=lifespan)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.ALLOWED_HOSTS)
 
 
 def bool_value(value) -> int:
@@ -48,6 +56,23 @@ def clean_text(value: str | None, max_len: int = 500) -> str | None:
     return value[:max_len] if value else None
 
 
+def safe_url(value: str | None, *, allow_upload: bool = False) -> str | None:
+    value = clean_text(value, 500)
+    if value is None:
+        return None
+    if re.search(r"[\x00-\x1f\x7f]", value):
+        raise ValueError("URL contains control characters")
+    if allow_upload and re.fullmatch(r"/uploads/[a-f0-9]{32}\.(jpg|png|webp)", value):
+        return value
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        raise ValueError("invalid URL") from None
+    if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        raise ValueError("only HTTPS URLs are allowed")
+    return value
+
+
 def validate_date_or_400(value: str) -> str:
     try:
         return availability.validate_date(value)
@@ -62,16 +87,52 @@ def validate_time_or_400(value: str) -> str:
         raise HTTPException(400, "שעה לא תקינה") from None
 
 
-def issue_otp(email: str, ip: str):
+def enforce_request_limit(
+    scope: str,
+    identity: str,
+    limit: int,
+    window_seconds: int,
+) -> None:
+    with db.get_conn() as conn, db.transaction(conn, immediate=True):
+        allowed = db.enforce_rate_limit(
+            conn,
+            scope,
+            auth.rate_identity(scope, identity),
+            limit,
+            window_seconds,
+        )
+    if not allowed:
+        raise HTTPException(429, "יותר מדי בקשות. נסו שוב מאוחר יותר.")
+
+
+def is_booking_overlap_error(exc: Exception) -> bool:
+    return "booking_overlap" in str(exc) or getattr(exc, "sqlstate", None) == "23P01"
+
+
+def issue_otp(email: str, ip: str, purpose: str):
     ts = db.now()
-    with db.get_conn() as conn:
-        if conn.execute("SELECT COUNT(*) FROM otp_requests WHERE email=? AND created_at>?", (email, ts - 3600)).fetchone()[0] >= 3:
-            raise HTTPException(429, "יותר מדי בקשות. נסי שוב בעוד שעה.")
-        if conn.execute("SELECT COUNT(*) FROM otp_requests WHERE ip=? AND created_at>?", (ip, ts - 3600)).fetchone()[0] >= 10:
-            raise HTTPException(429, "יותר מדי בקשות. נסי שוב בעוד שעה.")
-        code = f"{secrets.randbelow(10000):04d}"
-        conn.execute("INSERT INTO otp_requests (email,ip,created_at) VALUES (?,?,?)", (email, ip, ts))
-        conn.execute("INSERT OR REPLACE INTO otp_codes (email,code_hash,expires_at,attempts,created_at) VALUES (?,?,?,?,?)", (email, auth.otp_hash(code), ts + 300, 0, ts))
+    with db.get_conn() as conn, db.transaction(conn, immediate=True):
+        email_allowed = db.enforce_rate_limit(
+            conn, "otp-request-email", auth.rate_identity("email", email), 3, 3600
+        )
+        ip_allowed = db.enforce_rate_limit(
+            conn, "otp-request-ip", auth.rate_identity("ip", ip), 10, 3600
+        )
+        if not email_allowed or not ip_allowed:
+            raise HTTPException(429, "יותר מדי בקשות. נסו שוב מאוחר יותר.")
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        conn.execute(
+            "INSERT INTO otp_requests (email,ip,created_at) VALUES (?,?,?)",
+            (email, ip, ts),
+        )
+        conn.execute("DELETE FROM otp_requests WHERE created_at<?", (ts - 86400,))
+        conn.execute(
+            "INSERT INTO otp_codes (email,code_hash,purpose,expires_at,attempts,created_at) "
+            "VALUES (?,?,?,?,0,?) ON CONFLICT (email) DO UPDATE SET "
+            "code_hash=excluded.code_hash,purpose=excluded.purpose,"
+            "expires_at=excluded.expires_at,attempts=0,created_at=excluded.created_at",
+            (email, auth.otp_hash(email, purpose, code), purpose, ts + 300, ts),
+        )
     status = mailer.send_email(
         email,
         "otp",
@@ -81,19 +142,23 @@ def issue_otp(email: str, ip: str):
     )
     if not status.startswith("mailjet:2"):
         with db.get_conn() as conn:
-            conn.execute("DELETE FROM otp_codes WHERE email=?", (email,))
+            conn.execute("DELETE FROM otp_codes WHERE email=? AND purpose=?", (email, purpose))
         raise HTTPException(503, "לא הצלחנו לשלוח את המייל כרגע. נסו שוב בעוד דקה.")
 
 
-class EmailIn(BaseModel):
+class ApiModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class EmailIn(ApiModel):
     email: str = Field(min_length=3, max_length=254)
 
 
 class VerifyIn(EmailIn):
-    code: str = Field(pattern=r"^\d{4}$")
+    code: str = Field(pattern=r"^\d{6}$")
 
 
-class BookingIn(BaseModel):
+class BookingIn(ApiModel):
     service_ids: list[int] = Field(min_length=1, max_length=8)
     date: str
     time: str
@@ -111,26 +176,48 @@ class BookingIn(BaseModel):
         return validate_time_or_400(value)
 
 
-class StatusIn(BaseModel):
+class StatusIn(ApiModel):
     status: str = Field(pattern=r"^(approved|rejected|cancelled)$")
 
 
-class ArrivalIn(BaseModel):
+class RescheduleIn(ApiModel):
+    date: str
+    time: str
+
+    @field_validator("date")
+    @classmethod
+    def valid_date(cls, value):
+        return validate_date_or_400(value)
+
+    @field_validator("time")
+    @classmethod
+    def valid_time(cls, value):
+        return validate_time_or_400(value)
+
+
+class ArrivalIn(ApiModel):
     answer: str = Field(pattern=r"^(confirmed|declined)$")
 
 
-class ServiceIn(BaseModel):
+class ServiceIn(ApiModel):
     name: str = Field(min_length=1, max_length=100)
     category: str | None = Field(default=None, max_length=80)
     price: int = Field(default=0, ge=0, le=100000)
     duration_minutes: int = Field(ge=5, le=480)
-    is_active: bool | int | str = 1
+    is_active: bool = True
     display_order: int = Field(default=0, ge=0, le=100000)
 
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value):
+        if not value.strip():
+            raise ValueError("service name is required")
+        return value.strip()
 
-class HoursIn(BaseModel):
+
+class HoursIn(ApiModel):
     day_of_week: int = Field(ge=0, le=6)
-    is_closed: bool | int | str = 0
+    is_closed: bool = False
     open_time: str | None = None
     close_time: str | None = None
     slot_interval_minutes: int = Field(default=15, ge=5, le=240)
@@ -143,9 +230,9 @@ class HoursIn(BaseModel):
         return validate_time_or_400(value)
 
 
-class OverrideIn(BaseModel):
+class OverrideIn(ApiModel):
     override_date: str
-    is_closed: bool | int | str = 0
+    is_closed: bool = False
     open_time: str | None = None
     close_time: str | None = None
     slot_interval_minutes: int | None = Field(default=None, ge=5, le=240)
@@ -164,7 +251,7 @@ class OverrideIn(BaseModel):
         return validate_time_or_400(value)
 
 
-class BlockIn(BaseModel):
+class BlockIn(ApiModel):
     blocked_date: str
     blocked_time: str
     duration_minutes: int = Field(default=60, ge=5, le=480)
@@ -181,12 +268,12 @@ class BlockIn(BaseModel):
         return validate_time_or_400(value)
 
 
-class CustomerIn(BaseModel):
+class CustomerIn(ApiModel):
     internal_note: str | None = Field(default=None, max_length=500)
-    is_blocked: bool | int | str = 0
+    is_blocked: bool = False
 
 
-class SettingsIn(BaseModel):
+class SettingsIn(ApiModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=500)
     address: str | None = Field(default=None, max_length=250)
@@ -199,44 +286,138 @@ class SettingsIn(BaseModel):
     min_lead_minutes: int = Field(ge=0, le=10080)
     max_days_ahead: int = Field(ge=1, le=365)
 
+    @field_validator("name")
+    @classmethod
+    def valid_name(cls, value):
+        if not value.strip():
+            raise ValueError("business name is required")
+        return value.strip()
+
+    @field_validator("social_url", "waze_url")
+    @classmethod
+    def valid_link(cls, value):
+        return safe_url(value)
+
+    @field_validator("cover_image", "profile_image")
+    @classmethod
+    def valid_image_link(cls, value):
+        return safe_url(value, allow_upload=True)
+
+    @field_validator("phone")
+    @classmethod
+    def valid_phone(cls, value):
+        value = clean_text(value, 32)
+        if value and not re.fullmatch(r"[+0-9()\-\s]{5,32}", value):
+            raise ValueError("invalid phone")
+        return value
+
 
 def clean_public_settings(settings):
-    keys = ("name", "description", "address", "phone", "social_url", "waze_url", "cover_image", "profile_image", "preparation_message", "min_lead_minutes", "max_days_ahead")
+    keys = (
+        "name",
+        "description",
+        "address",
+        "phone",
+        "social_url",
+        "waze_url",
+        "cover_image",
+        "profile_image",
+        "preparation_message",
+        "min_lead_minutes",
+        "max_days_ahead",
+    )
     return {k: settings[k] for k in keys}
 
 
 def google_redirect_uri(request: Request) -> str:
     if config.GOOGLE_REDIRECT_URI:
         return config.GOOGLE_REDIRECT_URI
-    return str(request.url_for("google_callback"))
+    if config.PUBLIC_BASE_URL:
+        return f"{config.PUBLIC_BASE_URL}/api/owner/google/callback"
+    if request.url.hostname in {"localhost", "127.0.0.1", "testserver"}:
+        return str(request.url_for("google_callback"))
+    raise HTTPException(503, "כתובת החזרה של Google אינה מוגדרת")
 
 
 @app.middleware("http")
-async def owner_guard(request: Request, call_next):
-    if request.url.path.startswith("/api/owner/"):
-        try:
-            auth.require_owner(request)
-        except HTTPException as exc:
-            response = JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=exc.headers)
-        else:
-            response = await call_next(request)
-    else:
+async def security_guard(request: Request, call_next):
+    request.state.request_id = uuid4().hex
+    public_unsafe_routes = {
+        "/api/auth/request-code",
+        "/api/auth/request-owner-code",
+        "/api/auth/verify",
+        "/api/auth/verify-owner",
+    }
+    try:
+        session = None
+        if request.url.path.startswith("/api/owner/"):
+            session = auth.require_owner(request)
+        if (
+            request.method.upper() not in auth.SAFE_METHODS
+            and request.url.path.startswith("/api/")
+            and request.url.path not in public_unsafe_routes
+        ):
+            auth.require_csrf(request, session)
         response = await call_next(request)
+    except HTTPException as exc:
+        response = JSONResponse(
+            {"detail": exc.detail},
+            status_code=exc.status_code,
+            headers=exc.headers,
+        )
+
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["Referrer-Policy"] = "same-origin"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; script-src 'self'; "
+        "style-src 'self' https://fonts.googleapis.com; "
+        "style-src-attr 'unsafe-inline'; "
+        "font-src 'self' https://fonts.gstatic.com; "
+        "img-src 'self' data: https:; connect-src 'self'; "
+        "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+    )
+    response.headers["X-Request-ID"] = request.state.request_id
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    if config.IS_PRODUCTION or request.headers.get("x-forwarded-proto") == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_handler(_request: Request, _exc: RequestValidationError):
+    return JSONResponse({"detail": "אחד הפרטים שנשלחו אינו תקין"}, status_code=422)
+
+
+@app.exception_handler(Exception)
+async def unhandled_error_handler(request: Request, exc: Exception):
+    logger.error(
+        "Unhandled request error request_id=%s path=%s type=%s",
+        getattr(request.state, "request_id", "unknown"),
+        request.url.path,
+        type(exc).__name__,
+    )
+    return JSONResponse(
+        {"detail": "אירעה שגיאה זמנית. נסו שוב בעוד רגע."},
+        status_code=500,
+    )
 
 
 @app.get("/api/business")
 def business():
     with db.get_conn() as conn:
-        return {"settings": clean_public_settings(db.settings(conn)), "services": db.public_services(conn)}
+        return {
+            "settings": clean_public_settings(db.settings(conn)),
+            "services": db.public_services(conn),
+        }
 
 
 @app.get("/api/slots")
-def slots(date_from: str, date_to: str, duration: int):
+def slots(date_from: str, date_to: str, duration: int, request: Request):
+    enforce_request_limit("availability-ip", auth.client_ip(request), 120, 60)
     if duration < 1 or duration > 480:
         raise HTTPException(400, "משך לא תקין")
     try:
@@ -249,8 +430,9 @@ def slots(date_from: str, date_to: str, duration: int):
 @app.post("/api/auth/request-code")
 def request_code(data: EmailIn, request: Request):
     email = auth.normalize_email(data.email)
-    ip = request.client.host if request.client else "unknown"
-    issue_otp(email, ip)
+    if email == config.OWNER_EMAIL:
+        return {"ok": True}
+    issue_otp(email, auth.client_ip(request), "customer")
     return {"ok": True}
 
 
@@ -258,29 +440,78 @@ def request_code(data: EmailIn, request: Request):
 def request_owner_code(data: EmailIn, request: Request):
     email = auth.normalize_email(data.email)
     if email != config.OWNER_EMAIL:
-        raise HTTPException(403, "אפשר לשלוח קוד ניהול רק למייל של בעל העסק.")
-    ip = request.client.host if request.client else "unknown"
-    issue_otp(email, ip)
+        return {"ok": True}
+    issue_otp(email, auth.client_ip(request), "owner")
     return {"ok": True}
 
 
 @app.post("/api/auth/verify")
-def verify(data: VerifyIn, response: Response):
+def verify(data: VerifyIn, request: Request, response: Response):
+    return verify_otp(data, request, response, "customer")
+
+
+@app.post("/api/auth/verify-owner")
+def verify_owner(data: VerifyIn, request: Request, response: Response):
+    return verify_otp(data, request, response, "owner")
+
+
+def verify_otp(data: VerifyIn, request: Request, response: Response, purpose: str):
     email = auth.normalize_email(data.email)
+    if purpose == "owner" and email != config.OWNER_EMAIL:
+        raise HTTPException(400, "הקוד לא נכון או שפג תוקפו. אפשר לשלוח קוד חדש.")
+    if purpose == "customer" and email == config.OWNER_EMAIL:
+        raise HTTPException(400, "הקוד לא נכון או שפג תוקפו. אפשר לשלוח קוד חדש.")
     bad = HTTPException(400, "הקוד לא נכון או שפג תוקפו. אפשר לשלוח קוד חדש.")
-    with db.get_conn() as conn:
-        row = conn.execute("SELECT * FROM otp_codes WHERE email=?", (email,)).fetchone()
-        if not row or row["expires_at"] < db.now() or row["attempts"] >= 5:
-            raise bad
-        conn.execute("UPDATE otp_codes SET attempts=attempts+1 WHERE email=?", (email,))
-        import hmac
-        if not hmac.compare_digest(row["code_hash"], auth.otp_hash(data.code)):
-            raise bad
-        conn.execute("DELETE FROM otp_codes WHERE email=?", (email,))
-        customer = db.customer_by_email(conn, email)
-        role = "owner" if email == config.OWNER_EMAIL else "customer"
-        auth.create_session(conn, response, email, role, customer["id"] if customer else None)
-        return {"role": role, "is_new": customer is None and role == "customer", "name": customer["name"] if customer else None}
+    ip = auth.client_ip(request)
+    failure: HTTPException | None = None
+    result = None
+    with db.get_conn() as conn, db.transaction(conn, immediate=True):
+        email_allowed = db.enforce_rate_limit(
+            conn, "otp-verify-email", auth.rate_identity("email", email), 10, 3600
+        )
+        ip_allowed = db.enforce_rate_limit(
+            conn, "otp-verify-ip", auth.rate_identity("ip", ip), 30, 3600
+        )
+        if not email_allowed or not ip_allowed:
+            failure = HTTPException(429, "יותר מדי ניסיונות אימות. נסו שוב מאוחר יותר.")
+        else:
+            otp_sql = "SELECT * FROM otp_codes WHERE email=? AND purpose=?"
+            if conn.postgres:
+                otp_sql += " FOR UPDATE"
+            row = conn.execute(otp_sql, (email, purpose)).fetchone()
+            if not row or row["expires_at"] < db.now() or row["attempts"] >= 5:
+                if row:
+                    conn.execute("DELETE FROM otp_codes WHERE email=?", (email,))
+                failure = bad
+            else:
+                conn.execute("UPDATE otp_codes SET attempts=attempts+1 WHERE email=?", (email,))
+                import hmac
+
+                if not hmac.compare_digest(
+                    row["code_hash"], auth.otp_hash(email, purpose, data.code)
+                ):
+                    failure = bad
+                else:
+                    conn.execute("DELETE FROM otp_codes WHERE email=?", (email,))
+                    customer = db.customer_by_email(conn, email)
+                    role = "owner" if purpose == "owner" else "customer"
+                    csrf_token = auth.create_session(
+                        conn,
+                        response,
+                        email,
+                        role,
+                        customer["id"] if customer else None,
+                        request.cookies.get(auth.COOKIE),
+                    )
+                    result = {
+                        "role": role,
+                        "is_new": customer is None and role == "customer",
+                        "name": customer["name"] if customer else None,
+                        "csrf_token": csrf_token,
+                    }
+    if failure:
+        raise failure
+    return result
 
 
 @app.post("/api/auth/logout")
@@ -289,33 +520,68 @@ def logout(request: Request, response: Response):
     if token:
         with db.get_conn() as conn:
             conn.execute("DELETE FROM sessions WHERE token_hash=?", (auth.token_hash(token),))
-    response.delete_cookie(auth.COOKIE)
+    auth.clear_session_cookie(response)
     return {"ok": True}
+
+
+@app.get("/api/session")
+def session_status(request: Request):
+    with db.get_conn() as conn:
+        session = auth.session_from_request(conn, request)
+        if not session:
+            return {"authenticated": False}
+        customer = (
+            db.customer_by_id(conn, session["customer_id"]) if session["customer_id"] else None
+        )
+    return {
+        "authenticated": True,
+        "name": customer["name"] if customer else None,
+        "email": session["email"],
+        "role": session["role"],
+        "csrf_token": session["csrf_token"],
+    }
 
 
 @app.get("/api/me")
 def me(request: Request):
     session = auth.require_customer(request)
     with db.get_conn() as conn:
-        customer = db.customer_by_id(conn, session["customer_id"]) if session["customer_id"] else None
-        return {"name": customer["name"] if customer else None, "email": session["email"], "role": session["role"]}
+        customer = (
+            db.customer_by_id(conn, session["customer_id"]) if session["customer_id"] else None
+        )
+        return {
+            "name": customer["name"] if customer else None,
+            "email": session["email"],
+            "role": session["role"],
+            "csrf_token": session["csrf_token"],
+        }
 
 
 @app.post("/api/bookings")
 def create_booking(data: BookingIn, request: Request):
     session = auth.require_customer(request)
+    enforce_request_limit("booking-create-session", session["token_hash"], 8, 3600)
+    enforce_request_limit("booking-create-ip", auth.client_ip(request), 20, 3600)
     unique_service_ids = list(dict.fromkeys(data.service_ids))
-    with db.get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
+    try:
+        with db.get_conn() as conn, db.transaction(conn, immediate=True):
             services = db.active_services_by_ids(conn, unique_service_ids)
             if len(services) != len(unique_service_ids):
                 raise HTTPException(400, "שירות לא תקין")
             duration = sum(x["duration_minutes"] for x in services)
-            starts, ends = availability.to_unix(data.date, data.time, duration)
+            if duration < 5 or duration > 480:
+                raise HTTPException(400, "משך השירותים אינו תקין")
+            try:
+                starts, ends = availability.to_unix(data.date, data.time, duration)
+            except ValueError:
+                raise HTTPException(400, "המועד אינו תקין") from None
             settings = db.settings(conn)
             if starts < db.now() + settings["min_lead_minutes"] * 60:
                 raise HTTPException(409, "המועד כבר לא זמין. בחרי שעה אחרת.")
+            if date.fromisoformat(data.date) > availability.local_today() + timedelta(
+                days=settings["max_days_ahead"]
+            ):
+                raise HTTPException(409, "המועד רחוק מדי. בחרי תאריך קרוב יותר.")
             if not availability.within_working_hours(conn, data.date, data.time, duration):
                 raise HTTPException(409, "השעה לא זמינה. בחרי שעה אחרת.")
             if db.booking_overlap(conn, starts, ends):
@@ -328,14 +594,33 @@ def create_booking(data: BookingIn, request: Request):
             if not customer:
                 if not data.name or len(data.name.strip()) < 2:
                     raise HTTPException(400, "שם מלא נדרש לקביעת תור ראשון.")
-                customer_id = db.upsert_customer(conn, session["email"], clean_text(data.name, 80))
-                conn.execute("UPDATE sessions SET customer_id=? WHERE token_hash=?", (customer_id, auth.token_hash(request.cookies[auth.COOKIE])))
+                customer_id = db.upsert_customer(conn, session["email"], data.name.strip()[:80])
+                conn.execute(
+                    "UPDATE sessions SET customer_id=? WHERE token_hash=?",
+                    (customer_id, session["token_hash"]),
+                )
                 customer = db.customer_by_id(conn, customer_id)
-            booking_id = db.insert_booking(conn, customer["id"], unique_service_ids, services, data.date, data.time, clean_text(data.notes, 500), starts, ends)
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
+            booking_id = db.insert_booking(
+                conn,
+                customer["id"],
+                unique_service_ids,
+                services,
+                data.date,
+                data.time,
+                clean_text(data.notes, 500),
+                starts,
+                ends,
+            )
+            notifications.queue_booking_created(conn, booking_id)
+    except Exception as exc:
+        if is_booking_overlap_error(exc):
+            raise HTTPException(409, "השעה נתפסה. בחרי שעה אחרת.") from None
+        raise
+
+    try:
+        notifications.process_due_jobs(limit=4, booking_id=booking_id)
+    except Exception:
+        logger.exception("Immediate booking email processing failed booking_id=%s", booking_id)
     return {"id": booking_id, "status": "pending"}
 
 
@@ -351,27 +636,28 @@ def mine(request: Request):
 @app.post("/api/bookings/{booking_id}/cancel")
 def cancel_mine(booking_id: int, request: Request):
     session = auth.require_customer(request)
-    with db.get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            booking = db.booking_for_customer(conn, booking_id, session["customer_id"])
-            if not booking:
-                raise HTTPException(404, "לא נמצא")
-            if booking["status"] not in ("pending", "approved"):
-                raise HTTPException(400, "אי אפשר לבטל את התור הזה.")
-            event_id = booking.get("google_calendar_event_id")
-            try:
-                if event_id:
-                    google_calendar.delete_event(conn, event_id)
-                    event_id = None
-            except google_calendar.GoogleCalendarError as exc:
-                raise HTTPException(502, "Google Calendar לא הצליח למחוק את האירוע. נסי שוב.") from exc
-            conn.execute("UPDATE bookings SET status='cancelled',google_calendar_event_id=?,updated_at=? WHERE id=?", (event_id, db.now(), booking_id))
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-    return {"ok": True}
+    enforce_request_limit("booking-cancel", session["token_hash"], 20, 3600)
+    with db.get_conn() as conn, db.transaction(conn, immediate=True):
+        booking = db.booking_for_customer(conn, booking_id, session["customer_id"])
+        if not booking:
+            raise HTTPException(404, "לא נמצא")
+        if booking["status"] not in ("pending", "approved"):
+            raise HTTPException(400, "אי אפשר לבטל את התור הזה.")
+        sync_status = "pending" if booking.get("google_calendar_event_id") else "synced"
+        conn.execute(
+            "UPDATE bookings SET status='cancelled',calendar_sync_status=?,"
+            "calendar_sync_error=NULL,updated_at=? WHERE id=?",
+            (sync_status, db.now(), booking_id),
+        )
+        notifications.queue_booking_cancelled(
+            conn, booking_id, notify_customer=True, notify_owner=True
+        )
+    sync_result = calendar_sync.sync_booking(booking_id)
+    try:
+        notifications.process_due_jobs(limit=4, booking_id=booking_id)
+    except Exception:
+        logger.exception("Cancellation email processing failed booking_id=%s", booking_id)
+    return {"ok": True, "calendar_synced": sync_result["synced"], "warning": sync_result["warning"]}
 
 
 @app.post("/api/bookings/{booking_id}/hide")
@@ -392,9 +678,16 @@ def arrival_mine(booking_id: int, data: ArrivalIn, request: Request):
     session = auth.require_customer(request)
     with db.get_conn() as conn:
         booking = db.booking_for_customer(conn, booking_id, session["customer_id"])
-        if not booking or booking["arrival_status"] != "requested":
+        if (
+            not booking
+            or booking["status"] != "approved"
+            or booking["arrival_status"] != "requested"
+        ):
             raise HTTPException(404, "לא נמצא")
-        conn.execute("UPDATE bookings SET arrival_status=?,updated_at=? WHERE id=?", (data.answer, db.now(), booking_id))
+        conn.execute(
+            "UPDATE bookings SET arrival_status=?,updated_at=? WHERE id=?",
+            (data.answer, db.now(), booking_id),
+        )
     return {"ok": True}
 
 
@@ -406,29 +699,25 @@ def ics(booking_id: int, request: Request):
         if not booking:
             raise HTTPException(404, "לא נמצא")
         settings = db.settings(conn)
-    fmt = "%Y%m%dT%H%M%SZ"
-    body = "\n".join([
-        "BEGIN:VCALENDAR",
-        "VERSION:2.0",
-        "PRODID:-//Booking//HE",
-        "BEGIN:VEVENT",
-        f"UID:booking-{booking_id}",
-        f"DTSTAMP:{datetime.now(timezone.utc).strftime(fmt)}",
-        f"DTSTART:{datetime.fromtimestamp(booking['starts_at'], timezone.utc).strftime(fmt)}",
-        f"DTEND:{datetime.fromtimestamp(booking['ends_at'], timezone.utc).strftime(fmt)}",
-        f"SUMMARY:{settings['name']}",
-        "DESCRIPTION:תור",
-        "END:VEVENT",
-        "END:VCALENDAR",
-    ])
-    return PlainTextResponse(body, media_type="text/calendar; charset=utf-8")
+    return PlainTextResponse(
+        notifications.calendar_file(booking, settings),
+        media_type="text/calendar; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="booking-{booking_id}.ics"'},
+    )
 
 
 @app.get("/api/owner/bookings")
-def owner_bookings(date_from: str | None = None, date_to: str | None = None, status: str | None = None):
-    today = date.today()
+def owner_bookings(
+    date_from: str | None = None, date_to: str | None = None, status: str | None = None
+):
+    today = availability.local_today()
     start = validate_date_or_400(date_from) if date_from else today.isoformat()
     end = validate_date_or_400(date_to) if date_to else (today + timedelta(days=14)).isoformat()
+    if (
+        date.fromisoformat(end) < date.fromisoformat(start)
+        or (date.fromisoformat(end) - date.fromisoformat(start)).days > 366
+    ):
+        raise HTTPException(400, "טווח התאריכים אינו תקין")
     if status and status not in {"pending", "approved", "rejected", "cancelled"}:
         raise HTTPException(400, "סטטוס לא תקין")
     with db.get_conn() as conn:
@@ -438,91 +727,235 @@ def owner_bookings(date_from: str | None = None, date_to: str | None = None, sta
 @app.get("/api/owner/google/status")
 def google_status():
     with db.get_conn() as conn:
+        failed = conn.execute(
+            "SELECT COUNT(*) AS count FROM bookings WHERE calendar_sync_status='failed'"
+        ).fetchone()["count"]
         return {
             "oauth_ready": google_calendar.oauth_ready(),
             "connected": google_calendar.is_connected(conn),
             "calendar_id": config.GOOGLE_CALENDAR_ID,
+            "failed_syncs": failed,
         }
 
 
-@app.get("/api/owner/google/connect")
+@app.post("/api/owner/google/connect")
 def google_connect(request: Request):
+    session = auth.require_owner(request)
+    enforce_request_limit("google-oauth-start", session["token_hash"], 10, 3600)
     state = secrets.token_urlsafe(32)
     redirect_uri = google_redirect_uri(request)
     with db.get_conn() as conn:
-        db.create_oauth_state(conn, "google", state)
-    return RedirectResponse(google_calendar.authorization_url(redirect_uri, state), status_code=302)
+        db.create_oauth_state(conn, "google", state, session["token_hash"], redirect_uri)
+    return {"authorization_url": google_calendar.authorization_url(redirect_uri, state)}
 
 
 @app.get("/api/owner/google/callback", name="google_callback")
-def google_callback(request: Request, code: str | None = None, state: str | None = None, error: str | None = None):
+def google_callback(
+    request: Request, code: str | None = None, state: str | None = None, error: str | None = None
+):
     if error:
-        raise HTTPException(400, f"Google OAuth error: {error}")
-    if not code or not state:
-        raise HTTPException(400, "Google OAuth response is missing code or state")
+        raise HTTPException(400, "החיבור ל-Google בוטל או נכשל")
+    if not code or not state or len(code) > 4096 or len(state) > 256:
+        raise HTTPException(400, "תגובת Google אינה תקינה")
+    session = auth.require_owner(request)
     with db.get_conn() as conn:
-        if not db.consume_oauth_state(conn, "google", state):
-            raise HTTPException(400, "Google OAuth state is invalid or expired")
+        oauth_state = db.consume_oauth_state(conn, "google", state, session["token_hash"])
+        if not oauth_state:
+            raise HTTPException(400, "בקשת החיבור ל-Google פגה או כבר נוצלה")
         try:
-            token = google_calendar.exchange_code_for_refresh_token(code, google_redirect_uri(request))
+            token = google_calendar.exchange_code_for_refresh_token(
+                code, oauth_state["redirect_uri"]
+            )
         except google_calendar.GoogleCalendarError as exc:
-            raise HTTPException(502, "Google Calendar לא הצליח להשלים את החיבור. בדוק OAuth ונסה שוב.") from exc
-        db.set_secret(conn, "google_refresh_token", token)
+            raise HTTPException(
+                502, "Google Calendar לא הצליח להשלים את החיבור. בדוק OAuth ונסה שוב."
+            ) from exc
+        google_calendar.store_refresh_token(conn, token)
     return RedirectResponse("/owner.html?google=connected", status_code=302)
 
 
 @app.post("/api/owner/google/disconnect")
 def google_disconnect():
     with db.get_conn() as conn:
-        db.delete_secret(conn, "google_refresh_token")
-    return {"ok": True}
+        revoked = google_calendar.revoke_and_disconnect(conn)
+    return {"ok": True, "revoked": revoked}
 
 
 @app.post("/api/owner/bookings/{booking_id}/status")
 def owner_status(booking_id: int, data: StatusIn):
-    with db.get_conn() as conn:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            booking = db.booking_with_customer(conn, booking_id)
-            if not booking:
-                raise HTTPException(404, "לא נמצא")
-            allowed = (booking["status"] == "pending" and data.status in ("approved", "rejected", "cancelled")) or (booking["status"] == "approved" and data.status == "cancelled")
+    already_applied = False
+    with db.get_conn() as conn, db.transaction(conn, immediate=True):
+        booking = db.booking_with_customer(conn, booking_id, for_update=True)
+        if not booking:
+            raise HTTPException(404, "לא נמצא")
+        if booking["status"] == data.status:
+            already_applied = True
+        else:
+            allowed = (
+                booking["status"] == "pending"
+                and data.status in ("approved", "rejected", "cancelled")
+            ) or (booking["status"] == "approved" and data.status == "cancelled")
             if not allowed:
                 raise HTTPException(400, "מעבר סטטוס לא מותר")
-            event_id = booking.get("google_calendar_event_id")
-            try:
-                if data.status == "approved" and google_calendar.is_connected(conn):
-                    event_id = google_calendar.update_event(conn, event_id, booking, db.settings(conn))
-                if data.status == "cancelled" and event_id:
-                    google_calendar.delete_event(conn, event_id)
-                    event_id = None
-            except google_calendar.GoogleCalendarError as exc:
-                raise HTTPException(502, "Google Calendar לא הצליח לעדכן את היומן. בדוק את הגדרות OAuth ונסה שוב.") from exc
-            conn.execute("UPDATE bookings SET status=?,google_calendar_event_id=?,updated_at=? WHERE id=?", (data.status, event_id, db.now(), booking_id))
-            conn.execute("COMMIT")
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-    return {"ok": True}
+            connected = google_calendar.is_connected(conn)
+            if data.status == "approved":
+                sync_status = "pending" if connected else "not_connected"
+            elif data.status == "cancelled" and booking.get("google_calendar_event_id"):
+                sync_status = "pending"
+            else:
+                sync_status = "synced"
+            conn.execute(
+                "UPDATE bookings SET status=?,calendar_sync_status=?,"
+                "calendar_sync_error=NULL,updated_at=? WHERE id=?",
+                (data.status, sync_status, db.now(), booking_id),
+            )
+            booking["status"] = data.status
+            if data.status == "approved":
+                notifications.queue_booking_approved(conn, booking)
+            elif data.status == "rejected":
+                notifications.queue_booking_rejected(conn, booking_id)
+            else:
+                notifications.queue_booking_cancelled(
+                    conn, booking_id, notify_customer=True, notify_owner=False
+                )
+
+    sync_result = {"synced": False, "warning": None}
+    if data.status in {"approved", "cancelled"}:
+        sync_result = calendar_sync.sync_booking(booking_id)
+    try:
+        notifications.process_due_jobs(limit=6, booking_id=booking_id)
+    except Exception:
+        logger.exception("Status email processing failed booking_id=%s", booking_id)
+    return {
+        "ok": True,
+        "already_applied": already_applied,
+        "calendar_synced": sync_result["synced"],
+        "warning": sync_result["warning"],
+    }
+
+
+@app.put("/api/owner/bookings/{booking_id}/schedule")
+def owner_reschedule(booking_id: int, data: RescheduleIn, request: Request):
+    session = auth.require_owner(request)
+    enforce_request_limit("booking-reschedule", session["token_hash"], 30, 3600)
+    try:
+        with db.get_conn() as conn, db.transaction(conn, immediate=True):
+            booking = db.booking_with_customer(conn, booking_id, for_update=True)
+            if not booking:
+                raise HTTPException(404, "לא נמצא")
+            if booking["status"] not in {"pending", "approved"}:
+                raise HTTPException(400, "אי אפשר לשנות את מועד התור הזה")
+            if booking["booking_date"] == data.date and booking["booking_time"] == data.time:
+                return {
+                    "ok": True,
+                    "already_applied": True,
+                    "calendar_synced": booking["calendar_sync_status"] == "synced",
+                    "warning": None,
+                }
+            starts, ends = availability.to_unix(
+                data.date, data.time, int(booking["duration_minutes"])
+            )
+            if starts <= db.now():
+                raise HTTPException(400, "יש לבחור מועד עתידי")
+            if not availability.within_working_hours(
+                conn, data.date, data.time, int(booking["duration_minutes"])
+            ):
+                raise HTTPException(409, "המועד אינו בתוך שעות הפעילות")
+            if db.booking_overlap(conn, starts, ends, exclude_booking_id=booking_id):
+                raise HTTPException(409, "המועד כבר תפוס")
+            if db.block_overlap(conn, starts, ends):
+                raise HTTPException(409, "המועד חסום")
+            connected = google_calendar.is_connected(conn)
+            sync_status = (
+                "pending" if booking["status"] == "approved" and connected else "not_connected"
+            )
+            conn.execute(
+                "UPDATE bookings SET booking_date=?,booking_time=?,starts_at=?,ends_at=?,"
+                "calendar_sync_status=?,calendar_sync_error=NULL,updated_at=? WHERE id=?",
+                (
+                    data.date,
+                    data.time,
+                    starts,
+                    ends,
+                    sync_status,
+                    db.now(),
+                    booking_id,
+                ),
+            )
+            booking.update(
+                {
+                    "booking_date": data.date,
+                    "booking_time": data.time,
+                    "starts_at": starts,
+                    "ends_at": ends,
+                }
+            )
+            notifications.queue_booking_rescheduled(conn, booking)
+    except ValueError:
+        raise HTTPException(400, "המועד אינו תקין") from None
+    except Exception as exc:
+        if is_booking_overlap_error(exc):
+            raise HTTPException(409, "המועד כבר תפוס") from None
+        raise
+
+    sync_result = {"synced": False, "warning": None}
+    if booking["status"] == "approved":
+        sync_result = calendar_sync.sync_booking(booking_id)
+    try:
+        notifications.process_due_jobs(limit=6, booking_id=booking_id)
+    except Exception:
+        logger.exception("Reschedule email processing failed booking_id=%s", booking_id)
+    return {
+        "ok": True,
+        "already_applied": False,
+        "calendar_synced": sync_result["synced"],
+        "warning": sync_result["warning"],
+    }
 
 
 @app.post("/api/owner/bookings/{booking_id}/request-arrival")
 def request_arrival(booking_id: int):
-    with db.get_conn() as conn:
-        cur = conn.execute("UPDATE bookings SET arrival_status='requested',updated_at=? WHERE id=? AND status='approved'", (db.now(), booking_id))
-        if cur.rowcount == 0:
+    already_applied = False
+    with db.get_conn() as conn, db.transaction(conn, immediate=True):
+        booking = db.booking_with_customer(conn, booking_id, for_update=True)
+        if not booking or booking["status"] != "approved":
             raise HTTPException(404, "לא נמצא תור מאושר")
-    return {"ok": True}
+        if booking["arrival_status"] == "requested":
+            already_applied = True
+        else:
+            conn.execute(
+                "UPDATE bookings SET arrival_status='requested',updated_at=? WHERE id=?",
+                (db.now(), booking_id),
+            )
+            notifications.queue_arrival_request(conn, booking_id)
+    if not already_applied:
+        try:
+            notifications.process_due_jobs(limit=2, booking_id=booking_id)
+        except Exception:
+            logger.exception("Arrival email processing failed booking_id=%s", booking_id)
+    return {"ok": True, "already_applied": already_applied}
 
 
 @app.post("/api/owner/bookings/{booking_id}/no-show")
 def no_show(booking_id: int):
-    with db.get_conn() as conn:
-        booking = db.rowdict(conn.execute("SELECT customer_id FROM bookings WHERE id=? AND status='approved'", (booking_id,)).fetchone())
+    with db.get_conn() as conn, db.transaction(conn, immediate=True):
+        booking = db.rowdict(
+            conn.execute(
+                "SELECT customer_id FROM bookings WHERE id=? AND status='approved'", (booking_id,)
+            ).fetchone()
+        )
         if not booking:
             raise HTTPException(404, "לא נמצא")
-        conn.execute("UPDATE bookings SET arrival_status='no_show',updated_at=? WHERE id=?", (db.now(), booking_id))
-        conn.execute("UPDATE customers SET no_show_count=no_show_count+1 WHERE id=?", (booking["customer_id"],))
+        changed = conn.execute(
+            "UPDATE bookings SET arrival_status='no_show',updated_at=? "
+            "WHERE id=? AND COALESCE(arrival_status,'')<>'no_show'",
+            (db.now(), booking_id),
+        )
+        if changed.rowcount:
+            conn.execute(
+                "UPDATE customers SET no_show_count=no_show_count+1 WHERE id=?",
+                (booking["customer_id"],),
+            )
     return {"ok": True}
 
 
@@ -535,14 +968,38 @@ def services_get():
 @app.post("/api/owner/services")
 def services_add(item: ServiceIn):
     with db.get_conn() as conn:
-        cur = conn.execute("INSERT INTO services (name,category,price,duration_minutes,is_active,display_order) VALUES (?,?,?,?,?,?)", (clean_text(item.name, 100), clean_text(item.category, 80), item.price, item.duration_minutes, bool_value(item.is_active), item.display_order))
-        return {"id": cur.lastrowid}
+        service_id = db.insert_id(
+            conn,
+            "INSERT INTO services "
+            "(name,category,price,duration_minutes,is_active,display_order) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                clean_text(item.name, 100),
+                clean_text(item.category, 80),
+                item.price,
+                item.duration_minutes,
+                bool_value(item.is_active),
+                item.display_order,
+            ),
+        )
+        return {"id": service_id}
 
 
 @app.put("/api/owner/services/{service_id}")
 def services_put(service_id: int, item: ServiceIn):
     with db.get_conn() as conn:
-        cur = conn.execute("UPDATE services SET name=?,category=?,price=?,duration_minutes=?,is_active=?,display_order=? WHERE id=?", (clean_text(item.name, 100), clean_text(item.category, 80), item.price, item.duration_minutes, bool_value(item.is_active), item.display_order, service_id))
+        cur = conn.execute(
+            "UPDATE services SET name=?,category=?,price=?,duration_minutes=?,is_active=?,display_order=? WHERE id=?",
+            (
+                clean_text(item.name, 100),
+                clean_text(item.category, 80),
+                item.price,
+                item.duration_minutes,
+                bool_value(item.is_active),
+                item.display_order,
+                service_id,
+            ),
+        )
         if cur.rowcount == 0:
             raise HTTPException(404, "לא נמצא")
     return {"ok": True}
@@ -551,7 +1008,9 @@ def services_put(service_id: int, item: ServiceIn):
 @app.delete("/api/owner/services/{service_id}")
 def services_delete(service_id: int):
     with db.get_conn() as conn:
-        conn.execute("DELETE FROM services WHERE id=?", (service_id,))
+        cursor = conn.execute("DELETE FROM services WHERE id=?", (service_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "לא נמצא")
     return {"ok": True}
 
 
@@ -563,28 +1022,67 @@ def hours_get():
 
 @app.put("/api/owner/hours")
 def hours_put(items: list[HoursIn]):
-    if len(items) != 7:
+    if len(items) != 7 or {item.day_of_week for item in items} != set(range(7)):
         raise HTTPException(400, "יש לשלוח 7 ימים")
-    with db.get_conn() as conn:
+    with db.get_conn() as conn, db.transaction(conn, immediate=True):
         for item in items:
-            if not bool_value(item.is_closed) and (not item.open_time or not item.close_time or availability.parse_minutes(item.open_time) >= availability.parse_minutes(item.close_time)):
+            if not bool_value(item.is_closed) and (
+                not item.open_time
+                or not item.close_time
+                or availability.parse_minutes(item.open_time)
+                >= availability.parse_minutes(item.close_time)
+            ):
                 raise HTTPException(400, "שעות פתיחה לא תקינות")
-            conn.execute("UPDATE working_hours SET is_closed=?,open_time=?,close_time=?,slot_interval_minutes=? WHERE day_of_week=?", (bool_value(item.is_closed), item.open_time, item.close_time, item.slot_interval_minutes, item.day_of_week))
+            conn.execute(
+                "UPDATE working_hours SET is_closed=?,open_time=?,close_time=?,slot_interval_minutes=? WHERE day_of_week=?",
+                (
+                    bool_value(item.is_closed),
+                    item.open_time,
+                    item.close_time,
+                    item.slot_interval_minutes,
+                    item.day_of_week,
+                ),
+            )
     return {"ok": True}
 
 
 @app.get("/api/owner/overrides")
-def overrides_get(date_from: str = "0000-01-01", date_to: str = "9999-12-31"):
+def overrides_get(date_from: str = "1970-01-01", date_to: str = "2100-12-31"):
+    validate_date_or_400(date_from)
+    validate_date_or_400(date_to)
+    if date_to < date_from:
+        raise HTTPException(400, "טווח תאריכים לא תקין")
     with db.get_conn() as conn:
         return {"overrides": db.overrides_between(conn, date_from, date_to)}
 
 
 @app.post("/api/owner/overrides")
 def overrides_post(item: OverrideIn):
-    if not bool_value(item.is_closed) and (not item.open_time or not item.close_time):
-        raise HTTPException(400, "נדרשות שעות פתיחה וסגירה")
+    is_closed = bool_value(item.is_closed)
+    if not is_closed:
+        if not item.open_time or not item.close_time:
+            raise HTTPException(400, "נדרשות שעות פתיחה וסגירה")
+        if availability.parse_minutes(item.open_time) >= availability.parse_minutes(
+            item.close_time
+        ):
+            raise HTTPException(400, "שעות הפתיחה אינן תקינות")
     with db.get_conn() as conn:
-        conn.execute("INSERT OR REPLACE INTO date_overrides VALUES (?,?,?,?,?,?)", (item.override_date, bool_value(item.is_closed), item.open_time, item.close_time, item.slot_interval_minutes, clean_text(item.internal_note, 500)))
+        conn.execute(
+            "INSERT INTO date_overrides "
+            "(override_date,is_closed,open_time,close_time,slot_interval_minutes,internal_note) "
+            "VALUES (?,?,?,?,?,?) ON CONFLICT (override_date) DO UPDATE SET "
+            "is_closed=excluded.is_closed,open_time=excluded.open_time,"
+            "close_time=excluded.close_time,slot_interval_minutes=excluded.slot_interval_minutes,"
+            "internal_note=excluded.internal_note",
+            (
+                item.override_date,
+                is_closed,
+                item.open_time,
+                item.close_time,
+                item.slot_interval_minutes,
+                clean_text(item.internal_note, 500),
+            ),
+        )
     return {"ok": True}
 
 
@@ -597,17 +1095,41 @@ def overrides_delete(day: str):
 
 
 @app.get("/api/owner/blocks")
-def blocks_get(date_from: str = "0000-01-01", date_to: str = "9999-12-31"):
+def blocks_get(date_from: str = "1970-01-01", date_to: str = "2100-12-31"):
+    validate_date_or_400(date_from)
+    validate_date_or_400(date_to)
+    if date_to < date_from:
+        raise HTTPException(400, "טווח תאריכים לא תקין")
     with db.get_conn() as conn:
         return {"blocks": db.blocks_between(conn, date_from, date_to)}
 
 
 @app.post("/api/owner/blocks")
 def blocks_post(item: BlockIn):
-    starts, ends = availability.to_unix(item.blocked_date, item.blocked_time, item.duration_minutes)
+    try:
+        starts, ends = availability.to_unix(
+            item.blocked_date, item.blocked_time, item.duration_minutes
+        )
+    except ValueError:
+        raise HTTPException(400, "המועד אינו תקין") from None
     with db.get_conn() as conn:
-        cur = conn.execute("INSERT INTO blocked_slots (blocked_date,blocked_time,duration_minutes,internal_note,starts_at,ends_at) VALUES (?,?,?,?,?,?)", (item.blocked_date, item.blocked_time, item.duration_minutes, clean_text(item.internal_note, 500), starts, ends))
-        return {"id": cur.lastrowid}
+        if db.booking_overlap(conn, starts, ends):
+            raise HTTPException(409, "קיים תור במועד הזה")
+        block_id = db.insert_id(
+            conn,
+            "INSERT INTO blocked_slots "
+            "(blocked_date,blocked_time,duration_minutes,internal_note,starts_at,ends_at) "
+            "VALUES (?,?,?,?,?,?)",
+            (
+                item.blocked_date,
+                item.blocked_time,
+                item.duration_minutes,
+                clean_text(item.internal_note, 500),
+                starts,
+                ends,
+            ),
+        )
+        return {"id": block_id}
 
 
 @app.delete("/api/owner/blocks/{block_id}")
@@ -620,13 +1142,22 @@ def blocks_delete(block_id: int):
 @app.get("/api/owner/customers")
 def customers_get():
     with db.get_conn() as conn:
-        return {"customers": [dict(r) for r in conn.execute("SELECT * FROM customers ORDER BY created_at DESC")]}
+        return {
+            "customers": [
+                dict(r) for r in conn.execute("SELECT * FROM customers ORDER BY created_at DESC")
+            ]
+        }
 
 
 @app.put("/api/owner/customers/{customer_id}")
 def customers_put(customer_id: int, item: CustomerIn):
     with db.get_conn() as conn:
-        conn.execute("UPDATE customers SET internal_note=?,is_blocked=? WHERE id=?", (clean_text(item.internal_note, 500), bool_value(item.is_blocked), customer_id))
+        cursor = conn.execute(
+            "UPDATE customers SET internal_note=?,is_blocked=? WHERE id=?",
+            (clean_text(item.internal_note, 500), bool_value(item.is_blocked), customer_id),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "לא נמצא")
     return {"ok": True}
 
 
@@ -638,32 +1169,73 @@ def settings_get():
 
 @app.put("/api/owner/settings")
 def settings_put(item: SettingsIn):
-    fields = ["name", "description", "address", "phone", "social_url", "waze_url", "cover_image", "profile_image", "preparation_message", "min_lead_minutes", "max_days_ahead"]
-    values = [getattr(item, f) for f in fields]
+    fields = [
+        "name",
+        "description",
+        "address",
+        "phone",
+        "social_url",
+        "waze_url",
+        "cover_image",
+        "profile_image",
+        "preparation_message",
+        "min_lead_minutes",
+        "max_days_ahead",
+    ]
+    values = [
+        getattr(item, field)
+        if field in {"min_lead_minutes", "max_days_ahead"}
+        else clean_text(getattr(item, field), 500)
+        for field in fields
+    ]
     with db.get_conn() as conn:
-        conn.execute("UPDATE settings SET " + ",".join(f"{f}=?" for f in fields) + " WHERE id=1", values)
+        conn.execute(
+            "UPDATE settings SET name=?,description=?,address=?,phone=?,social_url=?,"
+            "waze_url=?,cover_image=?,profile_image=?,preparation_message=?,"
+            "min_lead_minutes=?,max_days_ahead=? WHERE id=1",
+            values,
+        )
     return {"ok": True}
 
 
 @app.post("/api/owner/upload")
-async def upload(file: UploadFile = File(...)):
-    data = await file.read()
-    if len(data) > 3_000_000:
+async def upload(request: Request, file: UploadFile = File(...)):
+    session = auth.require_owner(request)
+    enforce_request_limit("owner-upload", session["token_hash"], 20, 3600)
+    data = await file.read(config.MAX_UPLOAD_BYTES + 1)
+    if len(data) > config.MAX_UPLOAD_BYTES:
         raise HTTPException(400, "קובץ גדול מדי")
-    kinds = [(b"\xff\xd8\xff", ".jpg"), (b"\x89PNG\r\n\x1a\n", ".png"), (b"RIFF", ".webp")]
-    ext = next((e for magic, e in kinds if data.startswith(magic)), None)
-    if not ext:
-        raise HTTPException(400, "רק JPEG, PNG או WebP")
-    name = secrets.token_hex(16) + ext
-    (config.UPLOAD_DIR / name).write_bytes(data)
-    return {"url": f"/uploads/{name}"}
+    try:
+        url = await storage.save_public_image(data)
+    except storage.ImageValidationError:
+        raise HTTPException(400, "אפשר להעלות רק תמונת JPEG, PNG או WebP תקינה") from None
+    except storage.StorageUnavailableError:
+        raise HTTPException(503, "אחסון התמונות אינו מוגדר") from None
+    except Exception as exc:
+        logger.warning("Image upload failed type=%s", type(exc).__name__)
+        raise HTTPException(502, "העלאת התמונה נכשלה. נסו שוב.") from None
+    return {"url": url}
 
 
 @app.get("/uploads/{name}")
 def uploaded(name: str):
     if not re.fullmatch(r"[a-f0-9]{32}\.(jpg|png|webp)", name):
         raise HTTPException(404)
-    return FileResponse(config.UPLOAD_DIR / name)
+    target = config.UPLOAD_DIR / name
+    if not target.is_file():
+        raise HTTPException(404)
+    return FileResponse(target, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.get("/api/cron/reminders")
+def run_reminders(request: Request):
+    expected = f"Bearer {config.CRON_SECRET}" if config.CRON_SECRET else ""
+    supplied = request.headers.get("authorization", "")
+    if not expected or not secrets.compare_digest(supplied, expected):
+        raise HTTPException(401, "אין הרשאה")
+    email_result = notifications.process_due_jobs(limit=50)
+    calendar_result = calendar_sync.sync_pending(limit=25)
+    return {"ok": True, "emails": email_result, "calendar": calendar_result}
 
 
 app.mount("/", StaticFiles(directory=config.BASE_DIR / "static", html=True), name="static")

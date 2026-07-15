@@ -1320,6 +1320,17 @@ dialog::backdrop {
   gap: 24px;
 }
 
+.owner-topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#rescheduleDialog .form-grid {
+  margin-block: 18px 8px;
+  text-align: start;
+}
+
 .owner-topbar h1 {
   margin-block-end: 4px;
   font-size: 30px;
@@ -2242,11 +2253,11 @@ dialog::backdrop {
     margin-block-end: 16px;
   }
 
-  .owner-topbar > .btn span {
+  .owner-topbar__actions .btn span {
     display: none;
   }
 
-  .owner-topbar > .btn {
+  .owner-topbar__actions .btn {
     width: 44px;
     padding: 0;
   }

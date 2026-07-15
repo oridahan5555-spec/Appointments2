@@ -1,0 +1,29 @@
+[project]
+name = "appointments-booking"
+version = "1.0.0"
+requires-python = ">=3.11,<3.13"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S"]
+ignore = ["E501", "S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"app.py" = ["B008"]
+"config.py" = ["S108"]
+"db.py" = ["S608"]
+"google_calendar.py" = ["S105", "S310"]
+"mailer.py" = ["S310"]
+
+[tool.mypy]
+python_version = "3.11"
+check_untyped_defs = true
+ignore_missing_imports = true
+warn_unused_ignores = true
