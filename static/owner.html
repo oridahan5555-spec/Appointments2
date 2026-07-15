@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fbf8f6">
+  <title>ניהול תורים</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="owner-page">
+  <a class="skip-link" href="#ownerContent">דילוג לתוכן</a>
+  <div class="owner-layout">
+    <aside class="owner-sidebar" aria-label="ניווט ניהול">
+      <a class="brand-mark owner-brand" href="/owner.html">
+        <span class="brand-mark__icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg#sparkles"></use></svg></span>
+        <span><strong>ניהול העסק</strong><small>מרכז התורים שלך</small></span>
+      </a>
+      <nav id="ownerNav" class="owner-nav" aria-label="מסכי ניהול" hidden>
+        <button data-tab="bookings" type="button" aria-selected="true"><svg class="icon" aria-hidden="true"><use href="/icons.svg#calendar-days"></use></svg><span>תורים</span></button>
+        <button data-tab="services" type="button" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="/icons.svg#briefcase"></use></svg><span>שירותים</span></button>
+        <button data-tab="hours" type="button" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="/icons.svg#clock"></use></svg><span>שעות פעילות</span></button>
+        <button data-tab="overrides" type="button" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="/icons.svg#calendar-off"></use></svg><span>ימים מיוחדים</span></button>
+        <button data-tab="blocks" type="button" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="/icons.svg#ban"></use></svg><span>חסימות</span></button>
+        <button data-tab="customers" type="button" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="/icons.svg#users"></use></svg><span>לקוחות</span></button>
+        <button data-tab="settings" type="button" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="/icons.svg#settings"></use></svg><span>הגדרות</span></button>
+      </nav>
+      <a id="ownerSidebarFooter" class="owner-sidebar__footer" href="/" hidden><svg class="icon" aria-hidden="true"><use href="/icons.svg#home"></use></svg><span>צפייה בעמוד הלקוחות</span></a>
+    </aside>
+
+    <main class="owner-main" id="ownerContent">
+      <header class="owner-topbar">
+        <div>
+          <p class="eyebrow">מרכז הניהול</p>
+          <h1 id="pageTitle">כניסה לניהול</h1>
+          <p id="pageDescription">גישה מאובטחת לבעלת העסק.</p>
+        </div>
+        <a class="btn btn--secondary btn--compact" href="/">
+          <svg class="icon" aria-hidden="true"><use href="/icons.svg#home"></use></svg>
+          <span>עמוד הלקוחות</span>
+        </a>
+      </header>
+
+      <section class="login-card" aria-labelledby="loginTitle">
+        <div class="login-card__visual"><svg class="icon" aria-hidden="true"><use href="/icons.svg#shield-check"></use></svg></div>
+        <div class="login-card__content">
+          <p class="eyebrow">כניסה מאובטחת</p>
+          <h2 id="loginTitle">ברוכה הבאה</h2>
+          <p>הזיני את כתובת המייל של בעלת העסק. נשלח אלייך קוד חד־פעמי.</p>
+          <div class="field">
+            <label for="email">כתובת מייל</label>
+            <input id="email" class="input ltr" type="email" inputmode="email" autocomplete="email" placeholder="name@example.com">
+          </div>
+          <button id="sendCode" class="btn btn--primary btn--wide" type="button">שלחי לי קוד</button>
+          <div id="ownerCodeField" class="field" hidden>
+            <label for="code">הקוד שקיבלת</label>
+            <input id="code" class="input otp__box" inputmode="numeric" autocomplete="one-time-code" maxlength="4" pattern="[0-9]{4}" placeholder="0000">
+            <button id="verify" class="btn btn--primary btn--wide" type="button">כניסה לניהול</button>
+          </div>
+          <p id="loginStatus" class="field-message" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section id="admin" class="admin-content" hidden>
+        <div id="stats" class="stats-grid" aria-live="polite"></div>
+        <div id="view" class="admin-view" aria-live="polite" aria-busy="false"></div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="confirmDialog" class="confirm-dialog" aria-labelledby="confirmTitle">
+    <div class="confirm-dialog__icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg#circle-alert"></use></svg></div>
+    <h2 id="confirmTitle">אישור פעולה</h2>
+    <p id="confirmMessage"></p>
+    <div class="dialog-actions">
+      <button id="confirmCancel" class="btn btn--secondary" type="button">חזרה</button>
+      <button id="confirmAccept" class="btn btn--danger" type="button">אישור</button>
+    </div>
+  </dialog>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script src="/owner.js"></script>
+</body>
+</html>

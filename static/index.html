@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#fbf8f6">
+  <title>מערכת תורים</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body class="customer-page">
+  <a class="skip-link" href="#booking">דילוג לקביעת תור</a>
+  <header class="site-header">
+    <a class="brand-mark" href="/" aria-label="עמוד הבית">
+      <span class="brand-mark__icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg#sparkles"></use></svg></span>
+      <strong id="brand">מערכת תורים</strong>
+    </a>
+    <nav class="header-actions" aria-label="פעולות חשבון">
+      <a class="btn btn--ghost btn--compact owner-link" href="/owner.html">ניהול</a>
+      <button id="mineBtn" class="btn btn--secondary btn--compact" type="button">
+        <svg class="icon" aria-hidden="true"><use href="/icons.svg#calendar-check"></use></svg>
+        <span>התורים שלי</span>
+      </button>
+    </nav>
+  </header>
+
+  <main class="booking-shell" id="booking">
+    <section class="business-card" aria-labelledby="bizName">
+      <div class="cover" id="cover" role="img" aria-label="תמונת העסק"></div>
+      <div class="business-card__content">
+        <div class="profile" id="profile" role="img" aria-label="תמונת פרופיל"></div>
+        <div class="business-card__heading">
+          <p class="eyebrow">קביעת תור אונליין</p>
+          <h1 id="bizName">קביעת תור</h1>
+          <p id="bizDesc" class="muted"></p>
+        </div>
+        <div id="links" class="contacts" aria-label="יצירת קשר"></div>
+      </div>
+    </section>
+
+    <section class="booking-panel" aria-labelledby="flowTitle">
+      <header class="flow-header">
+        <div>
+          <p class="eyebrow">שלב <span id="stepNumber">1</span> מתוך 3</p>
+          <h2 id="flowTitle">מה תרצי לקבוע?</h2>
+          <p id="flowHint" class="section-description">אפשר לבחור שירות אחד או כמה שירותים.</p>
+        </div>
+        <div class="step-counter" aria-hidden="true"><span id="stepCounterValue">1</span><small>/ 3</small></div>
+      </header>
+
+      <ol class="progress-rail" aria-label="שלבי קביעת התור">
+        <li class="active" data-step-indicator="1" aria-current="step"><span>1</span><b>שירותים</b></li>
+        <li data-step-indicator="2"><span>2</span><b>מועד</b></li>
+        <li data-step-indicator="3"><span>3</span><b>פרטים</b></li>
+      </ol>
+
+      <section id="serviceStep" class="flow-step" aria-label="בחירת שירותים">
+        <div id="services" class="service-grid" aria-live="polite">
+          <div class="skeleton service-skeleton"></div>
+          <div class="skeleton service-skeleton"></div>
+        </div>
+      </section>
+
+      <section id="timeStep" class="flow-step" aria-label="בחירת מועד" hidden>
+        <button class="flow-back" data-back="services" type="button"><svg class="icon icon--back" aria-hidden="true"><use href="/icons.svg#chevron-left"></use></svg><span>חזרה לשירותים</span></button>
+        <div class="segmented-control" aria-label="אופן בחירת מועד">
+          <button data-mode="first" type="button" aria-pressed="true">המועד הראשון שפנוי</button>
+          <button data-mode="day" type="button" aria-pressed="false">בחירה לפי יום</button>
+        </div>
+        <div id="dateField" class="field date-field" hidden>
+          <label for="dayPick">בחרי תאריך</label>
+          <input id="dayPick" class="input" type="date">
+        </div>
+        <div id="slots" class="slots" aria-live="polite" aria-busy="false"></div>
+      </section>
+
+      <section id="confirmStep" class="flow-step" aria-label="פרטים ואישור" hidden>
+        <button class="flow-back" data-back="time" type="button"><svg class="icon icon--back" aria-hidden="true"><use href="/icons.svg#chevron-left"></use></svg><span>בחירת מועד אחר</span></button>
+        <div class="appointment-summary" id="chosen"></div>
+        <div id="authBox" class="auth-card">
+          <div class="auth-card__title">
+            <svg class="icon" aria-hidden="true"><use href="/icons.svg#shield-check"></use></svg>
+            <div><h3>אימות מהיר ובטוח</h3><p>נשלח קוד חד־פעמי למייל שלך.</p></div>
+          </div>
+          <div class="field">
+            <label for="email">כתובת מייל</label>
+            <div class="input-action">
+              <input id="email" class="input ltr" type="email" inputmode="email" autocomplete="email" placeholder="name@example.com">
+              <button id="sendCode" class="btn btn--secondary" type="button">שלחי קוד</button>
+            </div>
+          </div>
+          <div id="codeField" class="field" hidden>
+            <label for="code">הקוד שקיבלת</label>
+            <div class="input-action">
+              <input id="code" class="input otp__box" inputmode="numeric" autocomplete="one-time-code" maxlength="4" pattern="[0-9]{4}" placeholder="0000">
+              <button id="verify" class="btn btn--secondary" type="button">אישור</button>
+            </div>
+          </div>
+          <p id="authStatus" class="field-message" aria-live="polite"></p>
+        </div>
+        <div id="nameField" class="field" hidden>
+          <label for="name">שם מלא</label>
+          <input id="name" class="input" autocomplete="name" placeholder="השם שלך">
+        </div>
+        <div class="field">
+          <label for="notes">הערה לבעלת העסק <span class="optional">לא חובה</span></label>
+          <textarea id="notes" class="input" maxlength="500" placeholder="משהו שכדאי לדעת לפני התור?"></textarea>
+        </div>
+        <button id="book" class="btn btn--primary btn--wide" type="button">קבעי תור</button>
+      </section>
+    </section>
+  </main>
+
+  <div id="summaryBar" class="summary-bar" hidden>
+    <div class="summary-bar__inner">
+      <div><span class="summary-bar__label">הבחירה שלך</span><strong id="total">בחרי שירות</strong></div>
+      <button id="nextTime" class="btn btn--primary" type="button">
+        <span>המשך לבחירת מועד</span>
+        <svg class="icon icon--direction" aria-hidden="true"><use href="/icons.svg#chevron-left"></use></svg>
+      </button>
+    </div>
+  </div>
+
+  <dialog id="mineModal" class="sheet" aria-labelledby="mineTitle">
+    <div class="sheet__handle" aria-hidden="true"></div>
+    <header class="sheet__header">
+      <div><p class="eyebrow">האזור האישי</p><h2 id="mineTitle">התורים שלי</h2></div>
+      <button class="icon-btn" data-close type="button" aria-label="סגירה"><svg class="icon" aria-hidden="true"><use href="/icons.svg#x"></use></svg></button>
+    </header>
+    <div id="mineList" class="booking-list" aria-live="polite"></div>
+  </dialog>
+
+  <dialog id="successModal" class="success-dialog" aria-labelledby="successTitle">
+    <div class="success-mark"><svg class="icon" aria-hidden="true"><use href="/icons.svg#check"></use></svg></div>
+    <p class="eyebrow">הבקשה נשלחה</p>
+    <h2 id="successTitle">התור נקבע וממתין לאישור</h2>
+    <p>נשלח לך מייל ברגע שבעלת העסק תאשר את התור.</p>
+    <button id="successDone" class="btn btn--primary btn--wide" type="button">סיום</button>
+  </dialog>
+
+  <dialog id="confirmDialog" class="confirm-dialog" aria-labelledby="confirmTitle">
+    <div class="confirm-dialog__icon"><svg class="icon" aria-hidden="true"><use href="/icons.svg#circle-alert"></use></svg></div>
+    <h2 id="confirmTitle">לבטל את התור?</h2>
+    <p id="confirmMessage">לאחר הביטול המועד יחזור להיות פנוי ללקוחות אחרות.</p>
+    <div class="dialog-actions">
+      <button id="confirmCancel" class="btn btn--secondary" type="button">חזרה</button>
+      <button id="confirmAccept" class="btn btn--danger" type="button">בטלי תור</button>
+    </div>
+  </dialog>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
