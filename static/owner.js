@@ -766,7 +766,7 @@ async function requestCode() {
   }
   setBusy(buttonNode, true, "שולחת...");
   try {
-    await api("/api/auth/request-code", { method: "POST", body: JSON.stringify({ email }) });
+    await api("/api/auth/request-owner-code", { method: "POST", body: JSON.stringify({ email }) });
     $("#ownerCodeField").hidden = false;
     $("#loginStatus").textContent = "הקוד נשלח. הוא תקף למשך 5 דקות.";
     $("#code").focus();

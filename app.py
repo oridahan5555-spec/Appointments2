@@ -62,6 +62,29 @@ def validate_time_or_400(value: str) -> str:
         raise HTTPException(400, "שעה לא תקינה") from None
 
 
+def issue_otp(email: str, ip: str):
+    ts = db.now()
+    with db.get_conn() as conn:
+        if conn.execute("SELECT COUNT(*) FROM otp_requests WHERE email=? AND created_at>?", (email, ts - 3600)).fetchone()[0] >= 3:
+            raise HTTPException(429, "יותר מדי בקשות. נסי שוב בעוד שעה.")
+        if conn.execute("SELECT COUNT(*) FROM otp_requests WHERE ip=? AND created_at>?", (ip, ts - 3600)).fetchone()[0] >= 10:
+            raise HTTPException(429, "יותר מדי בקשות. נסי שוב בעוד שעה.")
+        code = f"{secrets.randbelow(10000):04d}"
+        conn.execute("INSERT INTO otp_requests (email,ip,created_at) VALUES (?,?,?)", (email, ip, ts))
+        conn.execute("INSERT OR REPLACE INTO otp_codes (email,code_hash,expires_at,attempts,created_at) VALUES (?,?,?,?,?)", (email, auth.otp_hash(code), ts + 300, 0, ts))
+    status = mailer.send_email(
+        email,
+        "otp",
+        "קוד האימות שלך",
+        "הקוד תקף לחמש דקות. אין להעביר אותו לאדם אחר.",
+        code=code,
+    )
+    if not status.startswith("mailjet:2"):
+        with db.get_conn() as conn:
+            conn.execute("DELETE FROM otp_codes WHERE email=?", (email,))
+        raise HTTPException(503, "לא הצלחנו לשלוח את המייל כרגע. נסו שוב בעוד דקה.")
+
+
 class EmailIn(BaseModel):
     email: str = Field(min_length=3, max_length=254)
 
@@ -227,26 +250,17 @@ def slots(date_from: str, date_to: str, duration: int):
 def request_code(data: EmailIn, request: Request):
     email = auth.normalize_email(data.email)
     ip = request.client.host if request.client else "unknown"
-    ts = db.now()
-    with db.get_conn() as conn:
-        if conn.execute("SELECT COUNT(*) FROM otp_requests WHERE email=? AND created_at>?", (email, ts - 3600)).fetchone()[0] >= 3:
-            raise HTTPException(429, "יותר מדי בקשות. נסי שוב בעוד שעה.")
-        if conn.execute("SELECT COUNT(*) FROM otp_requests WHERE ip=? AND created_at>?", (ip, ts - 3600)).fetchone()[0] >= 10:
-            raise HTTPException(429, "יותר מדי בקשות. נסי שוב בעוד שעה.")
-        code = f"{secrets.randbelow(10000):04d}"
-        conn.execute("INSERT INTO otp_requests (email,ip,created_at) VALUES (?,?,?)", (email, ip, ts))
-        conn.execute("INSERT OR REPLACE INTO otp_codes (email,code_hash,expires_at,attempts,created_at) VALUES (?,?,?,?,?)", (email, auth.otp_hash(code), ts + 300, 0, ts))
-    status = mailer.send_email(
-        email,
-        "otp",
-        "קוד האימות שלך",
-        "הקוד תקף לחמש דקות. אין להעביר אותו לאדם אחר.",
-        code=code,
-    )
-    if not status.startswith("mailjet:2"):
-        with db.get_conn() as conn:
-            conn.execute("DELETE FROM otp_codes WHERE email=?", (email,))
-        raise HTTPException(503, "לא הצלחנו לשלוח את המייל כרגע. נסו שוב בעוד דקה.")
+    issue_otp(email, ip)
+    return {"ok": True}
+
+
+@app.post("/api/auth/request-owner-code")
+def request_owner_code(data: EmailIn, request: Request):
+    email = auth.normalize_email(data.email)
+    if email != config.OWNER_EMAIL:
+        raise HTTPException(403, "אפשר לשלוח קוד ניהול רק למייל של בעל העסק.")
+    ip = request.client.host if request.client else "unknown"
+    issue_otp(email, ip)
     return {"ok": True}
 
 
