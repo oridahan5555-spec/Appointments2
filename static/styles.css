@@ -468,7 +468,11 @@ input[type="date"],
 }
 
 .progress-rail li b {
+  position: relative;
+  z-index: 1;
   overflow: hidden;
+  padding-inline: 6px;
+  background: var(--surface-card);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
