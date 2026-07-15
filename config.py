@@ -1,4 +1,4 @@
-import os
+﻿import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -48,10 +48,11 @@ MAILJET_SENDER_NAME = env("MAILJET_SENDER_NAME", "Appointments").strip()
 COOKIE_SECURE = env_bool("COOKIE_SECURE", False)
 DB_PATH = Path(env("DB_PATH", str(default_db_path())))
 UPLOAD_DIR = Path(env("UPLOAD_DIR", str(default_upload_dir())))
-TZ_NAME = env("TZ", "Asia/Jerusalem")
+TZ_NAME = env("APP_TIMEZONE", "Asia/Jerusalem").strip().lstrip(":") or "Asia/Jerusalem"
 GOOGLE_CALENDAR_ENABLED = env_bool("GOOGLE_CALENDAR_ENABLED", False)
 GOOGLE_CLIENT_ID = env("GOOGLE_CLIENT_ID").strip()
 GOOGLE_CLIENT_SECRET = env("GOOGLE_CLIENT_SECRET").strip()
 GOOGLE_REFRESH_TOKEN = env("GOOGLE_REFRESH_TOKEN").strip()
 GOOGLE_CALENDAR_ID = env("GOOGLE_CALENDAR_ID", "primary").strip() or "primary"
 GOOGLE_REDIRECT_URI = env("GOOGLE_REDIRECT_URI").strip()
+
