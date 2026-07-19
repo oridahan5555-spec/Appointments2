@@ -233,6 +233,27 @@ def _seed_defaults(conn: Connection) -> None:
         "VALUES (1,?,?,0,30,1) ON CONFLICT (id) DO NOTHING",
         ("פגישת ייעוץ", "כללי"),
     )
+    default_services = [
+        (1, "בניה בטיפים הפוך", "ציפורניים", 230, 150, 1),
+        (2, "לק גל + מבנה אנטומי", "ציפורניים", 110, 90, 2),
+        (3, "הסרה לק גל", "ציפורניים", 20, 20, 3),
+        (4, "ציור", "תוספות", 10, 10, 4),
+        (5, "פרנץ", "תוספות", 10, 20, 5),
+        (6, "השלמה", "תוספות", 10, 10, 6),
+    ]
+    for service_id, name, category, price, duration_minutes, display_order in default_services:
+        conn.execute(
+            "UPDATE services SET "
+            "name=?,category=?,price=?,duration_minutes=?,is_active=1,display_order=? "
+            "WHERE id=?",
+            (name, category, price, duration_minutes, display_order, service_id),
+        )
+        conn.execute(
+            "INSERT INTO services "
+            "(id,name,category,price,duration_minutes,is_active,display_order) "
+            "VALUES (?,?,?,?,?,1,?) ON CONFLICT (id) DO NOTHING",
+            (service_id, name, category, price, duration_minutes, display_order),
+        )
     if conn.postgres:
         conn.execute(
             "SELECT setval(pg_get_serial_sequence('services','id'), "

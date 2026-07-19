@@ -352,32 +352,96 @@ input[type="date"],
 }
 
 .contacts {
-  display: flex;
+  grid-column: 1 / -1;
+  margin-block-start: 4px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  max-width: none;
 }
 
 .contact-btn {
-  width: 44px;
-  height: 44px;
+  width: 100%;
+  min-height: 42px;
   border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  display: grid;
-  place-items: center;
+  border-radius: 8px;
+  padding: 9px 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   background: var(--surface-card);
   color: var(--ink-600);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, transform 100ms ease;
 }
 
+.contact-btn--waze {
+  border-color: #f0bdd1;
+  background: #fff7fa;
+  color: var(--accent);
+}
+
 .contact-btn span {
-  position: absolute;
-  width: 1px;
-  height: 1px;
+  position: static;
+  width: auto;
+  height: auto;
   padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
+  overflow: visible;
+  clip: auto;
   white-space: nowrap;
   border: 0;
+}
+
+.contact-btn--waze span {
+  position: static;
+  width: auto;
+  height: auto;
+  padding: 0;
+  overflow: visible;
+  clip: auto;
+  white-space: nowrap;
+  border: 0;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.business-detail {
+  width: 100%;
+  min-height: 42px;
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  background: var(--surface-card);
+  color: var(--ink-600);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: end;
+  text-decoration: none;
+}
+
+.business-detail--address {
+  background: #fffafc;
+}
+
+.business-detail span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.business-detail .icon {
+  flex: 0 0 auto;
+  color: var(--accent);
 }
 
 .booking-panel {
@@ -616,7 +680,6 @@ input[type="date"],
   border-block-start: 1px solid rgba(230, 222, 219, .9);
   background: rgba(255, 255, 255, .94);
   box-shadow: 0 -12px 40px rgba(33, 26, 29, .08);
-  backdrop-filter: blur(18px);
   animation: bar-in 180ms var(--ease) both;
 }
 
@@ -897,6 +960,17 @@ textarea.input {
 
 .auth-card.is-verified .auth-card__title h3 {
   color: var(--success);
+}
+
+.email-hint {
+  margin: 8px 0 0;
+  border: 1px solid #f3d7e2;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff7fa;
+  color: var(--ink-600);
+  font-size: 13px;
+  line-height: 1.45;
 }
 
 .field-message {
@@ -1888,6 +1962,44 @@ dialog::backdrop {
   min-height: auto;
 }
 
+.image-upload-field {
+  align-self: start;
+}
+
+.image-upload-preview {
+  min-height: 148px;
+  border: 1px dashed #e7bdcf;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(135deg, rgba(255, 247, 250, .92), rgba(248, 229, 238, .72)),
+    var(--surface-card);
+  color: var(--ink-500);
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.image-upload-preview.has-image {
+  border-style: solid;
+  background-position: center;
+  background-size: cover;
+}
+
+.image-upload-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.image-upload-native {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .admin-skeleton {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -1969,7 +2081,6 @@ dialog::backdrop {
     border-inline-end: 0;
     padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
     background: rgba(255, 255, 255, .96);
-    backdrop-filter: blur(18px);
   }
 
   .owner-brand,
@@ -2046,6 +2157,39 @@ dialog::backdrop {
   .contacts {
     grid-column: 1 / -1;
     padding-block-start: 4px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+
+  .business-detail,
+  .contact-btn {
+    min-height: 44px;
+    min-width: 0;
+    padding: 8px 9px;
+    justify-content: center;
+    text-align: center;
+    box-shadow: none;
+    overflow: hidden;
+    inline-size: 100%;
+    box-sizing: border-box;
+  }
+
+  .business-detail span,
+  .contact-btn span {
+    min-width: 0;
+    max-width: 100%;
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .business-detail .icon,
+  .contact-btn .icon {
+    width: 18px;
+    height: 18px;
+    flex: 0 0 auto;
   }
 
   .booking-panel {
@@ -2171,8 +2315,10 @@ dialog::backdrop {
   }
 
   .contact-btn {
-    width: 42px;
-    height: 42px;
+    width: 100%;
+    height: auto;
+    min-width: 0;
+    min-height: 44px;
   }
 
   .flow-header h2 {

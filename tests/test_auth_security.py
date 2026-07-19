@@ -153,6 +153,21 @@ def test_session_is_rotated_after_authentication(client, session_factory, sent_e
     assert old is None
 
 
+def test_owner_session_persists_for_ninety_days(client, sent_emails):
+    client.post("/api/auth/request-owner-code", json={"email": config.OWNER_EMAIL})
+    code = sent_emails[-1]["code"]
+    before = db.now()
+
+    response = client.post("/api/auth/verify-owner", json={"email": config.OWNER_EMAIL, "code": code})
+
+    assert response.status_code == 200
+    cookie = response.headers["set-cookie"].lower()
+    assert f"max-age={auth.OWNER_SESSION_LIFETIME_SECONDS}" in cookie
+    with db.get_conn() as conn:
+        row = conn.execute("SELECT expires_at FROM sessions WHERE role='owner'").fetchone()
+    assert row["expires_at"] >= before + auth.OWNER_SESSION_LIFETIME_SECONDS - 2
+
+
 def test_expired_session_and_logout_invalidation(client, session_factory):
     session_factory(expires_at=db.now() - 1)
     assert client.get("/api/me").status_code == 401

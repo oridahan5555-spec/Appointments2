@@ -81,6 +81,18 @@ function formatMoney(value) {
   return `₪${new Intl.NumberFormat("he-IL").format(Number(value) || 0)}`;
 }
 
+function whatsappHref(phone) {
+  const digits = String(phone || "").replace(/\D/g, "");
+  if (!digits) return "";
+  return `https://wa.me/${digits.startsWith("0") ? `972${digits.slice(1)}` : digits}`;
+}
+
+function wazeHref(settings) {
+  if (settings.waze_url) return settings.waze_url;
+  if (settings.address) return `https://waze.com/ul?q=${encodeURIComponent(settings.address)}`;
+  return "";
+}
+
 function errorMessage(error) {
   if (typeof error?.message === "string") return error.message;
   return "לא הצלחנו להשלים את הפעולה. בדקי את החיבור ונסי שוב.";
@@ -186,15 +198,27 @@ function renderBusiness() {
   const links = $("#links");
   links.replaceChildren();
   const phone = settings.phone ? String(settings.phone) : "";
+  const address = settings.address ? String(settings.address) : "";
+  const waze = wazeHref(settings);
+  if (address) {
+    const addressLine = create("p", "business-detail business-detail--address");
+    addressLine.append(icon("navigation"), create("span", "", address));
+    links.append(addressLine);
+  }
+  if (phone) {
+    const phoneLine = create("a", "business-detail");
+    phoneLine.href = `tel:${phone}`;
+    phoneLine.append(icon("phone"), create("span", "", phone));
+    links.append(phoneLine);
+  }
   const items = [
-    ["טלפון", phone && `tel:${phone}`, "phone"],
-    ["WhatsApp", phone && `https://wa.me/${phone.replace(/\D/g, "")}`, "message"],
-    ["Waze", settings.waze_url, "navigation"],
-    ["רשת חברתית", settings.social_url, "instagram"],
+    ["וויז", waze, "navigation", "contact-btn--waze"],
+    ["WhatsApp", phone && whatsappHref(phone), "message", ""],
+    ["אינסטגרם", settings.social_url, "instagram", ""],
   ];
-  items.forEach(([label, href, iconName]) => {
+  items.forEach(([label, href, iconName, extraClass]) => {
     if (!href) return;
-    const link = create("a", "contact-btn");
+    const link = create("a", `contact-btn ${extraClass || ""}`.trim());
     link.href = href;
     link.setAttribute("aria-label", label);
     if (href.startsWith("http")) {

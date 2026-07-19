@@ -12,6 +12,8 @@ import db
 
 COOKIE = "booking_session"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
+CUSTOMER_SESSION_LIFETIME_SECONDS = 30 * 24 * 3600
+OWNER_SESSION_LIFETIME_SECONDS = 90 * 24 * 3600
 
 
 def normalize_email(value: str) -> str:
@@ -66,7 +68,11 @@ def create_session(
 ) -> str:
     token = secrets.token_urlsafe(32)
     csrf_token = secrets.token_urlsafe(32)
-    lifetime = 12 * 3600 if role == "owner" else 30 * 24 * 3600
+    lifetime = (
+        OWNER_SESSION_LIFETIME_SECONDS
+        if role == "owner"
+        else CUSTOMER_SESSION_LIFETIME_SECONDS
+    )
     timestamp = int(time.time())
     if previous_token:
         conn.execute(

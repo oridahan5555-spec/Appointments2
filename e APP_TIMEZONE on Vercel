@@ -1,0 +1,45 @@
+warning: in the working copy of 'config.py', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/config.py b/config.py[m
+[1mindex 404f5e0..939703a 100644[m
+[1m--- a/config.py[m
+[1m+++ b/config.py[m
+[36m@@ -27,31 +27,17 @@[m [mdef require_secret(name: str) -> str:[m
+     raise RuntimeError(f"{name} must be set to at least 32 characters")[m
+ [m
+ [m
+[31m-def default_db_path() -> Path:[m
+[31m-    if env("VERCEL"):[m
+[31m-        return Path("/tmp/booking-db.sqlite")[m
+[31m-    return BASE_DIR / "data" / "db.sqlite"[m
+[31m-[m
+[31m-[m
+[31m-def default_upload_dir() -> Path:[m
+[31m-    if env("VERCEL"):[m
+[31m-        return Path("/tmp/booking-uploads")[m
+[31m-    return BASE_DIR / "data" / "uploads"[m
+[31m-[m
+[31m-[m
+ OWNER_EMAIL = env("OWNER_EMAIL").strip().lower()[m
+[31m-MAIL_PROVIDER = env("MAIL_PROVIDER", "mailjet").strip().lower()[m
+ MAILJET_API_KEY = env("MAILJET_API_KEY").strip()[m
+ MAILJET_SECRET_KEY = env("MAILJET_SECRET_KEY").strip()[m
+ MAILJET_SENDER_EMAIL = env("MAILJET_SENDER_EMAIL").strip().lower()[m
+ MAILJET_SENDER_NAME = env("MAILJET_SENDER_NAME", "Appointments").strip()[m
+ COOKIE_SECURE = env_bool("COOKIE_SECURE", False)[m
+[31m-DB_PATH = Path(env("DB_PATH", str(default_db_path())))[m
+[31m-UPLOAD_DIR = Path(env("UPLOAD_DIR", str(default_upload_dir())))[m
+[31m-TZ_NAME = env("TZ", "Asia/Jerusalem")[m
+[31m-GOOGLE_CALENDAR_ENABLED = env_bool("GOOGLE_CALENDAR_ENABLED", False)[m
+[31m-GOOGLE_CLIENT_ID = env("GOOGLE_CLIENT_ID").strip()[m
+[31m-GOOGLE_CLIENT_SECRET = env("GOOGLE_CLIENT_SECRET").strip()[m
+[31m-GOOGLE_REFRESH_TOKEN = env("GOOGLE_REFRESH_TOKEN").strip()[m
+[31m-GOOGLE_CALENDAR_ID = env("GOOGLE_CALENDAR_ID", "primary").strip() or "primary"[m
+[31m-GOOGLE_REDIRECT_URI = env("GOOGLE_REDIRECT_URI").strip()[m
+[32m+[m[32mDB_PATH = Path(env("DB_PATH", str(BASE_DIR / "data" / "db.sqlite")))[m
+[32m+[m[32mUPLOAD_DIR = Path(env("UPLOAD_DIR", str(BASE_DIR / "data" / "uploads")))[m
+[32m+[m[32mTZ_NAME = ([m
+[32m+[m[32m    env("APP_TIMEZONE", "Asia/Jerusalem")[m
+[32m+[m[32m    .strip()[m
+[32m+[m[32m    .lstrip(":")[m
+[32m+[m[32m    or "Asia/Jerusalem"[m
+[32m+[m[32m)[m

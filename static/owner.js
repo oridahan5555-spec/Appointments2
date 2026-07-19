@@ -109,6 +109,24 @@ async function api(path, options = {}) {
   return response.json();
 }
 
+async function uploadImage(file) {
+  const body = new FormData();
+  body.append("file", file);
+  const headers = {};
+  if (csrfToken) headers["x-csrf-token"] = csrfToken;
+  const response = await fetch("/api/owner/upload", {
+    method: "POST",
+    body,
+    headers,
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.detail || "העלאת התמונה נכשלה");
+  }
+  return response.json();
+}
+
 function setBusy(button, busy, busyLabel = "שומרת...") {
   const label = $("span", button);
   if (!button.dataset.label) button.dataset.label = (label || button).textContent.trim();
@@ -173,6 +191,71 @@ function field(name, label, value = "", options = {}) {
   if (options.required) control.required = true;
   if (options.dir) control.dir = options.dir;
   wrapper.append(labelText, control);
+  return wrapper;
+}
+
+function imageUploadField(name, label, value = "", description = "") {
+  const wrapper = create("div", "field image-upload-field");
+  const labelText = create("span", "field__label", label);
+  if (description) labelText.append(create("small", "", description));
+
+  const preview = create("div", "image-upload-preview");
+  preview.setAttribute("aria-hidden", "true");
+  const previewText = create("span", "", "אין תמונה");
+  preview.append(previewText);
+
+  const urlInput = create("input", "input");
+  urlInput.type = "text";
+  urlInput.name = name;
+  urlInput.dir = "ltr";
+  urlInput.placeholder = "אפשר גם להדביק קישור לתמונה";
+  urlInput.value = value ?? "";
+
+  const fileInput = create("input", "image-upload-native");
+  fileInput.type = "file";
+  fileInput.accept = "image/jpeg,image/png,image/webp";
+
+  const updatePreview = () => {
+    const url = urlInput.value.trim();
+    preview.classList.toggle("has-image", Boolean(url));
+    preview.style.backgroundImage = url ? `url("${url}")` : "";
+    previewText.hidden = Boolean(url);
+  };
+
+  const upload = button("בחרי תמונה מהמחשב", () => fileInput.click(), {
+    className: "btn--secondary btn--compact",
+    icon: "plus",
+  });
+  const clear = button("הסרת תמונה", () => {
+    urlInput.value = "";
+    updatePreview();
+    toast("התמונה הוסרה מהשדה. לחצי שמירת הגדרות כדי לפרסם את השינוי.");
+  }, {
+    className: "btn--ghost btn--compact",
+    icon: "x",
+  });
+
+  fileInput.addEventListener("change", async () => {
+    const [file] = fileInput.files || [];
+    if (!file) return;
+    setBusy(upload, true, "מעלה...");
+    try {
+      const result = await uploadImage(file);
+      urlInput.value = result.url;
+      updatePreview();
+      toast("התמונה עלתה. לחצי שמירת הגדרות כדי לפרסם אותה.");
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setBusy(upload, false);
+      fileInput.value = "";
+    }
+  });
+
+  urlInput.addEventListener("input", updatePreview);
+  updatePreview();
+  wrapper.append(labelText, preview, urlInput, create("div", "image-upload-actions"));
+  $(".image-upload-actions", wrapper).append(upload, clear, fileInput);
   return wrapper;
 }
 
@@ -784,15 +867,21 @@ async function renderSettings() {
   );
   businessSection.append(businessFields);
   const linksSection = create("section", "settings-section");
-  linksSection.append(sectionHeader("קישורים ותמונות", "אפשר להשאיר שדה ריק כדי שלא יוצג בעמוד הלקוחות."));
+  linksSection.append(sectionHeader("קישורים", "אפשר להשאיר שדה ריק כדי שלא יוצג בעמוד הלקוחות."));
   const linkFields = create("div", "form-grid");
   linkFields.append(
     field("social_url", "קישור לרשת חברתית", settings.social_url, { type: "url", dir: "ltr" }),
-    field("waze_url", "קישור Waze", settings.waze_url, { type: "url", dir: "ltr" }),
-    field("cover_image", "כתובת תמונת קאבר", settings.cover_image, { type: "url", dir: "ltr" }),
-    field("profile_image", "כתובת תמונת פרופיל", settings.profile_image, { type: "url", dir: "ltr" })
+    field("waze_url", "קישור Waze", settings.waze_url, { type: "url", dir: "ltr" })
   );
   linksSection.append(linkFields);
+  const imagesSection = create("section", "settings-section");
+  imagesSection.append(sectionHeader("תמונות העסק", "כאן מעלים תמונות שיופיעו בעמוד הלקוחות."));
+  const imageFields = create("div", "form-grid");
+  imageFields.append(
+    imageUploadField("cover_image", "תמונת קאבר", settings.cover_image, "התמונה הגדולה בראש עמוד קביעת התור"),
+    imageUploadField("profile_image", "תמונת פרופיל", settings.profile_image, "התמונה הקטנה ליד שם העסק")
+  );
+  imagesSection.append(imageFields);
   const bookingSection = create("section", "settings-section");
   bookingSection.append(sectionHeader("כללי הזמנה", "הגדרות שמשפיעות על המועדים שהמערכת מציעה."));
   const bookingFields = create("div", "form-grid");
@@ -841,7 +930,7 @@ async function renderSettings() {
     } catch (error) { toast(errorMessage(error), "error"); }
     finally { setBusy(save, false); }
   }, { className: "btn--primary", icon: "save" });
-  form.append(businessSection, linksSection, bookingSection, integrationsSection, createActionBar(save));
+  form.append(businessSection, linksSection, imagesSection, bookingSection, integrationsSection, createActionBar(save));
   form.addEventListener("submit", (event) => event.preventDefault());
   view.append(form);
 }

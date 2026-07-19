@@ -29,8 +29,8 @@ def test_valid_booking_uses_server_price_duration_and_status(client, session_fac
     assert response.status_code == 200
     with db.get_conn() as conn:
         booking = db.booking_with_customer(conn, response.json()["id"])
-    assert booking["price"] == 0
-    assert booking["duration_minutes"] == 30
+    assert booking["price"] == 230
+    assert booking["duration_minutes"] == 150
     assert booking["status"] == "pending"
     assert booking["customer_name"] == "Dana"
 
@@ -78,8 +78,8 @@ def test_booking_creation_rate_limit_prevents_spam(client, session_factory):
     times = ["09:00", "09:30", "10:00", "10:30", "11:00", "11:30", "12:00", "12:30"]
 
     for time in times:
-        assert create_booking(client, customer, time=time).status_code == 200
-    limited = create_booking(client, customer, time="13:00")
+        assert create_booking(client, customer, time=time, service_ids=[4]).status_code == 200
+    limited = create_booking(client, customer, time="13:00", service_ids=[4])
 
     assert limited.status_code == 429
 
