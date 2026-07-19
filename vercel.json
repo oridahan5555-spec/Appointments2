@@ -1,24 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "version": 2,
-  "builds": [
-    {
-      "src": "api/index.py",
-      "use": "@vercel/python",
-      "config": {
-        "maxLambdaSize": "15mb",
-        "includeFiles": [
-          "static/**",
-          "schema.sql",
-          "schema_postgres.sql"
-        ]
-      }
-    }
-  ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "api/index.py"
+      "dest": "/app.py"
     }
   ]
 }
