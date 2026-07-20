@@ -3,6 +3,7 @@ import io
 import json
 import re
 import sqlite3
+import os
 from pathlib import Path
 
 import pytest
@@ -125,6 +126,17 @@ def test_vercel_blob_upload_uses_blob_token_and_returns_url(monkeypatch):
 
     result = asyncio.run(storage.save_public_image(png_bytes()))
     assert result == "https://blob.vercel.com/business/test.png"
+
+
+@pytest.mark.skipif(
+    not (os.getenv("BLOB_READ_WRITE_TOKEN") or os.getenv("VERCEL_BLOB_READ_WRITE_TOKEN")),
+    reason="Vercel blob upload token is not configured",
+)
+def test_vercel_blob_upload_integration_works_with_real_store():
+    result = asyncio.run(storage.save_public_image(png_bytes()))
+    assert isinstance(result, str)
+    assert result.startswith("https://")
+    assert ".blob.vercel-storage.com/" in result or "vercel.com/api/blob" not in result
 
 
 def test_upload_path_traversal_and_unknown_names_return_404(client):

@@ -2,6 +2,8 @@ import io
 import logging
 import secrets
 import warnings
+import json
+from typing import Any
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -40,6 +42,64 @@ def _enhance_blob_error_logging() -> None:
         return code, err
 
     _blob_core.map_blob_error = map_blob_error_with_response
+
+
+def _sanitize_exception_dict(exc_dict: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in exc_dict.items():
+        lower_key = key.lower()
+        if "token" in lower_key or "auth" in lower_key:
+            sanitized[key] = "<redacted>"
+            continue
+        if isinstance(value, dict):
+            sanitized[key] = _sanitize_exception_dict(value)
+            continue
+        if isinstance(value, (list, tuple)):
+            sanitized[key] = [
+                _sanitize_exception_dict(item) if isinstance(item, dict) else "<redacted>" if isinstance(item, str) and "token" in item.lower() else item
+                for item in value
+            ]
+            continue
+        sanitized[key] = value
+    return sanitized
+
+
+def _safe_exception_info(exc: BaseException) -> dict[str, Any]:
+    response = getattr(exc, "response", None)
+    http_response = None
+    if hasattr(exc, "http_response_text") or hasattr(exc, "http_response_json"):
+        http_response = {
+            "status_code": getattr(exc, "http_status_code", None),
+            "text": getattr(exc, "http_response_text", None),
+            "json": getattr(exc, "http_response_json", None),
+        }
+    if response is not None:
+        try:
+            response_text = response.text
+        except Exception:
+            response_text = None
+        try:
+            response_json = response.json()
+        except Exception:
+            response_json = None
+        http_response = {
+            "status_code": getattr(response, "status_code", None),
+            "headers": {
+                k: v
+                for k, v in getattr(response, "headers", {}).items()
+                if k.lower() != "authorization"
+            },
+            "text": response_text[:2000] + "..." if isinstance(response_text, str) and len(response_text) > 2000 else response_text,
+            "json": response_json,
+        }
+    return {
+        "str": str(exc),
+        "repr": repr(exc),
+        "dict": _sanitize_exception_dict(dict(getattr(exc, "__dict__", {}))),
+        "status_code": getattr(exc, "status_code", None) or getattr(exc, "http_status_code", None),
+        "response": http_response,
+        "cause": _safe_exception_info(exc.__cause__) if getattr(exc, "__cause__", None) else None,
+    }
 
 
 _enhance_blob_error_logging()
@@ -119,20 +179,16 @@ async def save_public_image(data: bytes) -> str:
                     cache_control_max_age=31536000,
                 )
             except BlobError as exc:
+                exc_info = _safe_exception_info(exc)
                 logger.error(
-                    "Vercel BlobError upload failed message=%s path=%s content_type=%s size=%s token_present=%s http_status=%s http_response_text=%s http_response_json=%s",
-                    str(exc),
+                    "Vercel BlobError upload failed path=%s content_type=%s size=%s token_present=%s exc_info=%s",
                     f"business/{filename}",
                     content_type,
                     len(normalized),
                     bool(config.BLOB_READ_WRITE_TOKEN),
-                    getattr(exc, "http_status_code", None),
-                    getattr(exc, "http_response_text", None),
-                    getattr(exc, "http_response_json", None),
+                    json.dumps(exc_info, ensure_ascii=False),
                     exc_info=True,
                 )
-                if exc.__cause__ is not None:
-                    logger.error("Vercel BlobError cause=%s", repr(exc.__cause__))
                 raise
             except Exception:
                 logger.exception(
