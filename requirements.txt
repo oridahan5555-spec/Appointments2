@@ -8,4 +8,4 @@ email-validator==2.3.0
 cryptography==49.0.0
 Pillow==12.3.0
 psycopg[binary]==3.3.4
-vercel==0.7.0
+supabase==1.0.0

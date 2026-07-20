@@ -1,33 +1,18 @@
 import io
+import logging
 import secrets
 import warnings
+from urllib.parse import quote
+
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import config
-from typing import Optional
 
-# Preserve AsyncBlobClient symbol for tests/compatibility (may be monkeypatched)
-try:
-    from vercel.blob import AsyncBlobClient  # type: ignore
-except Exception:
-    AsyncBlobClient = None
-
-# Lazy import for supabase client; only required when SUPABASE_URL is configured.
-_supabase_client = None
-def _get_supabase_client():
-    global _supabase_client
-    if _supabase_client is not None:
-        return _supabase_client
-    if not config.SUPABASE_URL or not config.SUPABASE_SERVICE_KEY:
-        return None
-    try:
-        from supabase import create_client
-    except Exception:
-        return None
-    _supabase_client = create_client(config.SUPABASE_URL, config.SUPABASE_SERVICE_KEY)
-    return _supabase_client
-
+logger = logging.getLogger("storage")
 Image.MAX_IMAGE_PIXELS = 20_000_000
+
+_BUCKET = "business-images"
+_supabase_client = None
 
 
 class ImageValidationError(ValueError):
@@ -38,7 +23,38 @@ class StorageUnavailableError(RuntimeError):
     pass
 
 
-def _normalized_result(output: io.BytesIO, extension: str, content_type: str) -> tuple[bytes, str, str]:
+def _get_supabase_client():
+    global _supabase_client
+
+    if _supabase_client is not None:
+        return _supabase_client
+
+    if not config.SUPABASE_URL or not config.SUPABASE_SERVICE_KEY:
+        raise StorageUnavailableError(
+            "SUPABASE_URL and SUPABASE_SERVICE_KEY are not configured"
+        )
+
+    try:
+        from supabase import create_client
+    except Exception as exc:
+        raise StorageUnavailableError("Supabase client is not installed") from exc
+
+    try:
+        _supabase_client = create_client(
+            config.SUPABASE_URL,
+            config.SUPABASE_SERVICE_KEY,
+        )
+    except Exception as exc:
+        raise StorageUnavailableError("Could not create Supabase client") from exc
+
+    return _supabase_client
+
+
+def _normalized_result(
+    output: io.BytesIO,
+    extension: str,
+    content_type: str,
+) -> tuple[bytes, str, str]:
     value = output.getvalue()
     if len(value) > config.MAX_UPLOAD_BYTES:
         raise ImageValidationError("normalized-image-size")
@@ -48,19 +64,23 @@ def _normalized_result(output: io.BytesIO, extension: str, content_type: str) ->
 def normalize_image(data: bytes) -> tuple[bytes, str, str]:
     if not data or len(data) > config.MAX_UPLOAD_BYTES:
         raise ImageValidationError("image-size")
+
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
+
             with Image.open(io.BytesIO(data)) as probe:
                 probe.verify()
+
             with Image.open(io.BytesIO(data)) as source:
                 image_format = (source.format or "").upper()
                 if image_format not in {"JPEG", "PNG", "WEBP"}:
                     raise ImageValidationError("image-format")
-                source.seek(0)
+
                 image = ImageOps.exif_transpose(source)
                 image.thumbnail((4096, 4096), Image.Resampling.LANCZOS)
                 output = io.BytesIO()
+
                 if image_format == "JPEG":
                     image.convert("RGB").save(
                         output,
@@ -70,111 +90,139 @@ def normalize_image(data: bytes) -> tuple[bytes, str, str]:
                         progressive=True,
                     )
                     return _normalized_result(output, ".jpg", "image/jpeg")
+
                 if image_format == "PNG":
                     mode = "RGBA" if "A" in image.getbands() else "RGB"
                     image.convert(mode).save(output, format="PNG", optimize=True)
                     return _normalized_result(output, ".png", "image/png")
+
                 mode = "RGBA" if "A" in image.getbands() else "RGB"
-                image.convert(mode).save(output, format="WEBP", quality=88, method=6)
+                image.convert(mode).save(
+                    output,
+                    format="WEBP",
+                    quality=88,
+                    method=6,
+                )
                 return _normalized_result(output, ".webp", "image/webp")
-    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError) as exc:
+
+    except ImageValidationError:
+        raise
+    except (
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+        Image.DecompressionBombError,
+    ) as exc:
         raise ImageValidationError("invalid-image") from exc
     except Image.DecompressionBombWarning as exc:
         raise ImageValidationError("image-dimensions") from exc
 
 
+def _bucket_name(item) -> str | None:
+    if isinstance(item, dict):
+        return item.get("name") or item.get("id")
+    return getattr(item, "name", None) or getattr(item, "id", None)
+
+
+def _ensure_public_bucket(client) -> None:
+    try:
+        buckets = client.storage.list_buckets()
+        names = {_bucket_name(item) for item in buckets}
+    except Exception as exc:
+        raise StorageUnavailableError(
+            f"Could not list Supabase buckets: {exc}"
+        ) from exc
+
+    if _BUCKET in names:
+        return
+
+    try:
+        # Supabase client versions use slightly different signatures.
+        try:
+            client.storage.create_bucket(
+                _BUCKET,
+                options={
+                    "public": True,
+                    "file_size_limit": config.MAX_UPLOAD_BYTES,
+                    "allowed_mime_types": [
+                        "image/jpeg",
+                        "image/png",
+                        "image/webp",
+                    ],
+                },
+            )
+        except TypeError:
+            client.storage.create_bucket(
+                _BUCKET,
+                name=_BUCKET,
+                options={
+                    "public": True,
+                    "file_size_limit": config.MAX_UPLOAD_BYTES,
+                    "allowed_mime_types": [
+                        "image/jpeg",
+                        "image/png",
+                        "image/webp",
+                    ],
+                },
+            )
+    except Exception as exc:
+        raise StorageUnavailableError(
+            f"Could not create public Supabase bucket '{_BUCKET}': {exc}"
+        ) from exc
+
+
 async def save_public_image(data: bytes) -> str:
     normalized, extension, content_type = normalize_image(data)
     filename = f"{secrets.token_hex(16)}{extension}"
-    # If Vercel AsyncBlobClient is available and a blob token or Vercel runtime is set, prefer it
-    if (config.VERCEL or config.BLOB_READ_WRITE_TOKEN) and AsyncBlobClient is not None:
-        async with AsyncBlobClient() as client:
-            result = await client.put(
-                f"business/{filename}",
-                normalized,
-                access="private",
-                content_type=content_type,
-                add_random_suffix=False,
-                overwrite=False,
-                cache_control_max_age=31536000,
-            )
+    object_path = f"business/{filename}"
 
-        if not getattr(result, "url", None):
-            raise StorageUnavailableError("Vercel Blob did not return a URL")
-        return result.url
+    client = _get_supabase_client()
+    _ensure_public_bucket(client)
 
-    # If Supabase is configured, upload there
-    supabase = _get_supabase_client()
-    bucket = "business-images"
-    if supabase is not None:
-        # ensure bucket exists (best-effort)
-        try:
-            buckets = supabase.storage.list_buckets()
-            names = [b["name"] if isinstance(b, dict) and "name" in b else getattr(b, "name", None) for b in buckets]
-            if bucket not in names:
-                try:
-                    supabase.storage.create_bucket(bucket, public=False)
-                except Exception:
-                    # ignore create failures (may already exist or not permitted)
-                    pass
-        except Exception:
-            # ignore listing errors
-            pass
+    try:
+        bucket = client.storage.from_(_BUCKET)
+        bucket.upload(
+            object_path,
+            normalized,
+            {
+                "content-type": content_type,
+                "upsert": "false",
+            },
+        )
+    except Exception as exc:
+        logger.exception(
+            "Supabase upload failed bucket=%s path=%s",
+            _BUCKET,
+            object_path,
+        )
+        raise StorageUnavailableError(f"Supabase upload failed: {exc}") from exc
 
-        path = f"business/{filename}"
-        try:
-            res = supabase.storage.from_(bucket).upload(path, normalized, content_type=content_type)
-        except Exception as exc:
-            raise StorageUnavailableError(str(exc)) from exc
-
-        # Construct public URL (signed URL would require service key)
-        try:
-            public = supabase.storage.from_(bucket).get_public_url(path)
-            url = public.get("publicURL") or public.get("public_url") or public
-        except Exception:
-            # fallback: build relative path
-            url = f"/uploads/{filename}"
-        return url
-
-    # Local filesystem fallback for non-Supabase runs
-    config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    target = config.UPLOAD_DIR / filename
-    target.write_bytes(normalized)
-    return f"/uploads/{filename}"
+    # Build the public URL directly so the return type is always a plain string.
+    base = config.SUPABASE_URL.rstrip("/")
+    encoded_path = quote(object_path, safe="/")
+    return f"{base}/storage/v1/object/public/{_BUCKET}/{encoded_path}"
 
 
 def delete_image_by_url(url: str) -> bool:
-    """Delete an image given a URL or local path. Returns True if deleted or not applicable."""
     if not url:
         return True
-    # Local file
-    if url.startswith("/uploads/"):
-        target = config.UPLOAD_DIR / url.split("/uploads/", 1)[1]
-        try:
-            if target.is_file():
-                target.unlink()
-            return True
-        except Exception:
-            return False
 
-    # Supabase URL
-    supabase = _get_supabase_client()
-    if supabase is None:
-        return False
-    # Attempt to derive bucket and path
+    marker = f"/storage/v1/object/public/{_BUCKET}/"
+    if marker not in url:
+        return True
+
+    object_path = url.split(marker, 1)[1]
+    if not object_path:
+        return True
+
     try:
-        parsed = url.split('/')
-        # Supabase public url format contains /storage/v1/object/public/<bucket>/<path>
-        if 'storage' in parsed and 'object' in parsed and 'public' in parsed:
-            # find index of 'public'
-            idx = parsed.index('public')
-            bucket = parsed[idx+1]
-            path = '/'.join(parsed[idx+2:])
-        else:
-            # fallback to business/<filename>
-            bucket = 'business-images'
-            path = url.split(bucket + '/')[-1]
-        res = supabase.storage.from_(bucket).remove([path])
+        client = _get_supabase_client()
+        client.storage.from_(_BUCKET).remove([object_path])
         return True
     except Exception:
+        logger.exception(
+            "Supabase delete failed bucket=%s path=%s",
+            _BUCKET,
+            object_path,
+        )
         return False
