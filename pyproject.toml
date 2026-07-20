@@ -14,3 +14,6 @@ dependencies = [
     "psycopg[binary]==3.3.4",
     "vercel==0.7.0"
 ]
+
+[tool.vercel]
+entrypoint = "app:app"
