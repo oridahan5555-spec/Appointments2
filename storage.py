@@ -7,9 +7,42 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 import config
 from vercel.blob import AsyncBlobClient
+from vercel.blob.errors import BlobError
+from vercel._internal.blob import core as _blob_core
 
 logger = logging.getLogger("booking")
 Image.MAX_IMAGE_PIXELS = 20_000_000
+
+
+def _enhance_blob_error_logging() -> None:
+    original_map_blob_error = _blob_core.map_blob_error
+
+    def map_blob_error_with_response(response):
+        code, err = original_map_blob_error(response)
+        text = None
+        json_data = None
+        try:
+            text = response.text
+        except Exception:
+            text = None
+        content_type = response.headers.get("content-type", "")
+        if text is not None and "json" in content_type.lower():
+            try:
+                json_data = response.json()
+            except Exception:
+                json_data = None
+        try:
+            err.http_status_code = response.status_code
+            err.http_response_text = text
+            err.http_response_json = json_data
+        except Exception:
+            pass
+        return code, err
+
+    _blob_core.map_blob_error = map_blob_error_with_response
+
+
+_enhance_blob_error_logging()
 
 
 class ImageValidationError(ValueError):
@@ -85,7 +118,23 @@ async def save_public_image(data: bytes) -> str:
                     overwrite=False,
                     cache_control_max_age=31536000,
                 )
-            except Exception as exc:
+            except BlobError as exc:
+                logger.error(
+                    "Vercel BlobError upload failed message=%s path=%s content_type=%s size=%s token_present=%s http_status=%s http_response_text=%s http_response_json=%s",
+                    str(exc),
+                    f"business/{filename}",
+                    content_type,
+                    len(normalized),
+                    bool(config.BLOB_READ_WRITE_TOKEN),
+                    getattr(exc, "http_status_code", None),
+                    getattr(exc, "http_response_text", None),
+                    getattr(exc, "http_response_json", None),
+                    exc_info=True,
+                )
+                if exc.__cause__ is not None:
+                    logger.error("Vercel BlobError cause=%s", repr(exc.__cause__))
+                raise
+            except Exception:
                 logger.exception(
                     "Vercel Blob upload failed path=%s content_type=%s size=%s token_present=%s",
                     f"business/{filename}",
