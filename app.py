@@ -1313,6 +1313,17 @@ async def upload(request: Request, file: UploadFile = File(...)):
         raise HTTPException(400, "קובץ גדול מדי")
     try:
         url = await storage.save_public_image(data)
+        # Persist URL into settings.profile_image and delete previous image if any
+        with db.get_conn() as conn:
+            cur = conn.execute("SELECT profile_image FROM settings WHERE id=1")
+            row = cur.fetchone()
+            old = row[0] if row else None
+            conn.execute("UPDATE settings SET profile_image=? WHERE id=1", (url,))
+        # delete previous image if it was in storage
+        try:
+            storage.delete_image_by_url(old)
+        except Exception:
+            pass
     except storage.ImageValidationError:
         raise HTTPException(400, "אפשר להעלות רק תמונת JPEG, PNG או WebP תקינה") from None
     except storage.StorageUnavailableError:

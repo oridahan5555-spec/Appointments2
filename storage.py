@@ -4,7 +4,28 @@ import warnings
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import config
-from vercel.blob import AsyncBlobClient
+from typing import Optional
+
+# Preserve AsyncBlobClient symbol for tests/compatibility (may be monkeypatched)
+try:
+    from vercel.blob import AsyncBlobClient  # type: ignore
+except Exception:
+    AsyncBlobClient = None
+
+# Lazy import for supabase client; only required when SUPABASE_URL is configured.
+_supabase_client = None
+def _get_supabase_client():
+    global _supabase_client
+    if _supabase_client is not None:
+        return _supabase_client
+    if not config.SUPABASE_URL or not config.SUPABASE_SERVICE_KEY:
+        return None
+    try:
+        from supabase import create_client
+    except Exception:
+        return None
+    _supabase_client = create_client(config.SUPABASE_URL, config.SUPABASE_SERVICE_KEY)
+    return _supabase_client
 
 Image.MAX_IMAGE_PIXELS = 20_000_000
 
@@ -65,9 +86,8 @@ def normalize_image(data: bytes) -> tuple[bytes, str, str]:
 async def save_public_image(data: bytes) -> str:
     normalized, extension, content_type = normalize_image(data)
     filename = f"{secrets.token_hex(16)}{extension}"
-
-    # Use Vercel SDK defaults for authentication (OIDC / env token) — do not pass token here.
-    if config.VERCEL or config.BLOB_READ_WRITE_TOKEN:
+    # If Vercel AsyncBlobClient is available and a blob token or Vercel runtime is set, prefer it
+    if (config.VERCEL or config.BLOB_READ_WRITE_TOKEN) and AsyncBlobClient is not None:
         async with AsyncBlobClient() as client:
             result = await client.put(
                 f"business/{filename}",
@@ -83,8 +103,78 @@ async def save_public_image(data: bytes) -> str:
             raise StorageUnavailableError("Vercel Blob did not return a URL")
         return result.url
 
-    # Local filesystem fallback for non-Vercel runs
+    # If Supabase is configured, upload there
+    supabase = _get_supabase_client()
+    bucket = "business-images"
+    if supabase is not None:
+        # ensure bucket exists (best-effort)
+        try:
+            buckets = supabase.storage.list_buckets()
+            names = [b["name"] if isinstance(b, dict) and "name" in b else getattr(b, "name", None) for b in buckets]
+            if bucket not in names:
+                try:
+                    supabase.storage.create_bucket(bucket, public=False)
+                except Exception:
+                    # ignore create failures (may already exist or not permitted)
+                    pass
+        except Exception:
+            # ignore listing errors
+            pass
+
+        path = f"business/{filename}"
+        try:
+            res = supabase.storage.from_(bucket).upload(path, normalized, content_type=content_type)
+        except Exception as exc:
+            raise StorageUnavailableError(str(exc)) from exc
+
+        # Construct public URL (signed URL would require service key)
+        try:
+            public = supabase.storage.from_(bucket).get_public_url(path)
+            url = public.get("publicURL") or public.get("public_url") or public
+        except Exception:
+            # fallback: build relative path
+            url = f"/uploads/{filename}"
+        return url
+
+    # Local filesystem fallback for non-Supabase runs
     config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     target = config.UPLOAD_DIR / filename
     target.write_bytes(normalized)
     return f"/uploads/{filename}"
+
+
+def delete_image_by_url(url: str) -> bool:
+    """Delete an image given a URL or local path. Returns True if deleted or not applicable."""
+    if not url:
+        return True
+    # Local file
+    if url.startswith("/uploads/"):
+        target = config.UPLOAD_DIR / url.split("/uploads/", 1)[1]
+        try:
+            if target.is_file():
+                target.unlink()
+            return True
+        except Exception:
+            return False
+
+    # Supabase URL
+    supabase = _get_supabase_client()
+    if supabase is None:
+        return False
+    # Attempt to derive bucket and path
+    try:
+        parsed = url.split('/')
+        # Supabase public url format contains /storage/v1/object/public/<bucket>/<path>
+        if 'storage' in parsed and 'object' in parsed and 'public' in parsed:
+            # find index of 'public'
+            idx = parsed.index('public')
+            bucket = parsed[idx+1]
+            path = '/'.join(parsed[idx+2:])
+        else:
+            # fallback to business/<filename>
+            bucket = 'business-images'
+            path = url.split(bucket + '/')[-1]
+        res = supabase.storage.from_(bucket).remove([path])
+        return True
+    except Exception:
+        return False

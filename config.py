@@ -67,7 +67,10 @@ if not ALLOWED_HOSTS:
 TRUST_PROXY_HEADERS = env_bool("TRUST_PROXY_HEADERS", VERCEL)
 CRON_SECRET = env("CRON_SECRET")
 BLOB_READ_WRITE_TOKEN = env("BLOB_READ_WRITE_TOKEN") or env("VERCEL_BLOB_READ_WRITE_TOKEN")
-MAX_UPLOAD_BYTES = 3_000_000
+MAX_UPLOAD_BYTES = 5_000_000
+# Supabase configuration (optional). When set, uploads will use Supabase Storage.
+SUPABASE_URL = env("SUPABASE_URL")
+SUPABASE_SERVICE_KEY = env("SUPABASE_SERVICE_KEY") or env("SUPABASE_SERVICE_ROLE_KEY")
 GOOGLE_CALENDAR_ENABLED = env_bool("GOOGLE_CALENDAR_ENABLED", False)
 GOOGLE_CLIENT_ID = env("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = env("GOOGLE_CLIENT_SECRET")
@@ -146,5 +149,6 @@ def validate_runtime_config() -> None:
             raise RuntimeError("COOKIE_SECURE must be true on Vercel")
         if len(CRON_SECRET) < 32:
             raise RuntimeError("CRON_SECRET must be at least 32 characters on Vercel")
-        if not BLOB_READ_WRITE_TOKEN:
-            raise RuntimeError("BLOB_READ_WRITE_TOKEN is required for durable uploads on Vercel")
+        # On Vercel prefer Supabase for durable uploads; otherwise Blob token
+        if not (SUPABASE_URL and SUPABASE_SERVICE_KEY) and not BLOB_READ_WRITE_TOKEN:
+            raise RuntimeError("SUPABASE_URL+SERVICE_KEY or BLOB_READ_WRITE_TOKEN is required for durable uploads on Vercel")
