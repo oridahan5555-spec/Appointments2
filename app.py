@@ -1229,6 +1229,26 @@ async def upload(request: Request, file: UploadFile = File(...)):
     return {"url": url}
 
 
+@app.post("/api/owner/upload-smoke")
+async def upload_smoke(request: Request):
+    """Temporary secure smoke endpoint: owner-only, guarded by ENABLE_BLOB_SMOKE_TEST env var.
+
+    This uploads a few bytes to the Vercel Blob store using the SDK defaults
+    (no explicit token). Only enabled when ENABLE_BLOB_SMOKE_TEST is truthy.
+    """
+    if not config.env("ENABLE_BLOB_SMOKE_TEST"):
+        raise HTTPException(404)
+    session = auth.require_owner(request)
+    # tiny 1x1 PNG
+    data = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\xda\x63\x00\x01\x00\x00\x05\x00\x01\x0d\x0a\x2d\xb4\x00\x00\x00\x00IEND\xaeB`\x82"
+    try:
+        url = await storage.save_public_image(data)
+    except Exception:
+        logger.exception("Owner smoke image upload failed for owner=%s", session["token_hash"])
+        raise HTTPException(502, "שגיאת בדיקת העלאה")
+    return {"url": url}
+
+
 @app.get("/uploads/{name}")
 def uploaded(name: str):
     if not re.fullmatch(r"[a-f0-9]{32}\.(jpg|png|webp)", name):

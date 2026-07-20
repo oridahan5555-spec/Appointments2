@@ -1,0 +1,238 @@
+[
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\oidc\\aio.py",
+    "keywords": [
+      "VERCEL_OIDC_TOKEN",
+      "oidc",
+      "OIDC"
+    ],
+    "lines": [
+      "2:     fetch_vercel_oidc_token_async as fetch_vercel_oidc_token,",
+      "3:     get_vercel_oidc_token_async as get_vercel_oidc_token,",
+      "7: __all__ = [\"get_vercel_oidc_token\", \"refresh_token\", \"fetch_vercel_oidc_token\"]"
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\oidc\\credentials.py",
+    "keywords": [
+      "VERCEL_OIDC_TOKEN",
+      "oidc",
+      "OIDC"
+    ],
+    "lines": [
+      "5: from .token import VercelOidcTokenError, decode_oidc_payload, get_vercel_oidc_token_from_context",
+      "18:     # Resolve OIDC token from request headers (set by the runtime) or env var.",
+      "19:     oidc: str | None = None",
+      "21:         oidc = get_vercel_oidc_token_from_context()",
+      "22:     except VercelOidcTokenError:",
+      "25:     if oidc:",
+      "30:                 payload = decode_oidc_payload(oidc)",
+      "36:             return Credentials(token=oidc, project_id=project, team_id=team)",
+      "38:             \"OIDC token present but could not determine VERCEL_PROJECT_ID and VERCEL_TEAM_ID\""
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\oidc\\token.py",
+    "keywords": [
+      "VERCEL_OIDC_TOKEN",
+      "oidc",
+      "OIDC"
+    ],
+    "lines": [
+      "24: _cached_oidc_token_lock = threading.Lock()",
+      "25: _cached_oidc_token: str | None = None",
+      "26: _cached_oidc_payload: dict[str, Any] | None = None",
+      "29: class VercelOidcTokenError(Exception):",
+      "37: def get_vercel_oidc_token_from_context() -> str:",
+      "38:     # Prefer request header registered in the OIDC context,",
+      "50:     token_from_env = os.getenv(\"VERCEL_OIDC_TOKEN\")",
+      "52:         raise VercelOidcTokenError(",
+      "53:             \"The 'x-vercel-oidc-token' header is missing from the request. \"",
+      "54:             \"Do you have the OIDC option enabled in the Vercel project settings?\"",
+      "75:     return lower_headers.get(\"x-vercel-oidc-token\")",
+      "86:     with _cached_oidc_token_lock:",
+      "87:         global _cached_oidc_payload, _cached_oidc_token",
+      "88:         if _cached_oidc_token is None or _cached_oidc_payload is None:",
+      "89:             _cached_oidc_token = token",
+      "90:             _cached_oidc_payload = payload",
+      "92:         if _is_past_expiration(_cached_oidc_payload):",
+      "93:             _cached_oidc_token = token",
+      "94:             _cached_oidc_payload = payload",
+      "96:         if _expires_after(payload, _cached_oidc_payload):",
+      "97:             _cached_oidc_token = token",
+      "98:             _cached_oidc_payload = payload",
+      "100:         return _cached_oidc_token",
+      "104:     with _cached_oidc_token_lock:",
+      "105:         global _cached_oidc_payload, _cached_oidc_token",
+      "106:         if _cached_oidc_token is None or _cached_oidc_payload is None:",
+      "108:         if _is_past_expiration(_cached_oidc_payload):",
+      "109:             _cached_oidc_token = None",
+      "110:             _cached_oidc_payload = None",
+      "112:         return _cached_oidc_token",
+      "132: def _clear_cached_oidc_token() -> None:",
+      "133:     with _cached_oidc_token_lock:",
+      "134:         global _cached_oidc_payload, _cached_oidc_token",
+      "135:         _cached_oidc_token = None",
+      "136:         _cached_oidc_payload = None",
+      "140: get_vercel_oidc_token_sync = get_vercel_oidc_token_from_context",
+      "152:             raise VercelOidcTokenError(\"Failed to refresh OIDC token: login to vercel cli\")",
+      "154:             raise VercelOidcTokenError(\"Failed to refresh OIDC token: project id not found\")",
+      "155:         new_token = fetch_vercel_oidc_token(auth_token, project_id, team_id)",
+      "157:             raise VercelOidcTokenError(\"Failed to refresh OIDC token\")",
+      "159:         os.environ[\"VERCEL_OIDC_TOKEN\"] = new_token.token",
+      "161:         os.environ[\"VERCEL_OIDC_TOKEN\"] = maybe.token",
+      "173:             raise VercelOidcTokenError(\"Failed to refresh OIDC token: login to vercel cli\")",
+      "175:             raise VercelOidcTokenError(\"Failed to refresh OIDC token: project id not found\")",
+      "176:         new_token = await fetch_vercel_oidc_token_async(auth_token, project_id, team_id)",
+      "178:             raise VercelOidcTokenError(\"Failed to refresh OIDC token\")",
+      "180:         os.environ[\"VERCEL_OIDC_TOKEN\"] = new_token.token",
+      "182:         os.environ[\"VERCEL_OIDC_TOKEN\"] = maybe.token",
+      "185: def get_vercel_oidc_token() -> str:",
+      "189:         token = get_vercel_oidc_token_from_context()",
+      "201:                 raise VercelOidcTokenError(",
+      "202:                     \"Missing OIDC request header and no local project context (.vercel) available\",",
+      "206:             token = get_vercel_oidc_token_from_context()",
+      "210:         raise VercelOidcTokenError(\"Failed to refresh OIDC token\", e) from e",
+      "214: async def get_vercel_oidc_token_async() -> str:",
+      "218:         token = get_vercel_oidc_token_from_context()",
+      "229:                 raise VercelOidcTokenError(",
+      "230:                     \"Missing OIDC request header and no local project context (.vercel) available\",",
+      "234:             token = get_vercel_oidc_token_from_context()",
+      "238:         raise VercelOidcTokenError(\"Failed to refresh OIDC token\", e) from e",
+      "242: def fetch_vercel_oidc_token(",
+      "245:     url = f\"{BASE_URL}/projects/{project_id}/token?source=vercel-oidc-refresh\"",
+      "251:             raise RuntimeError(f\"Failed to refresh OIDC token: {r.status_code} {r.reason_phrase}\")",
+      "258: async def fetch_vercel_oidc_token_async(",
+      "261:     url = f\"{BASE_URL}/projects/{project_id}/token?source=vercel-oidc-refresh\"",
+      "267:             raise RuntimeError(f\"Failed to refresh OIDC token: {r.status_code} {r.reason_phrase}\")",
+      "274: def decode_oidc_payload(token: str) -> dict:"
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\oidc\\__init__.py",
+    "keywords": [
+      "VERCEL_OIDC_TOKEN",
+      "oidc",
+      "OIDC"
+    ],
+    "lines": [
+      "5:     VercelOidcTokenError,",
+      "6:     decode_oidc_payload,",
+      "8:     get_vercel_oidc_token,",
+      "9:     get_vercel_oidc_token_sync,",
+      "13:     \"VercelOidcTokenError\",",
+      "14:     \"get_vercel_oidc_token\",",
+      "15:     \"get_vercel_oidc_token_sync\",",
+      "20:     \"decode_oidc_payload\","
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\_internal\\blob\\core.py",
+    "keywords": [
+      "BLOB_READ_WRITE_TOKEN",
+      "VERCEL_BLOB_READ_WRITE_TOKEN"
+    ],
+    "lines": [
+      "617: _BLOB_TOKEN_ENV_VARS = [\"BLOB_READ_WRITE_TOKEN\", \"VERCEL_BLOB_READ_WRITE_TOKEN\"]"
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\_internal\\blob\\errors.py",
+    "keywords": [
+      "BLOB_READ_WRITE_TOKEN",
+      "VERCEL_BLOB_READ_WRITE_TOKEN"
+    ],
+    "lines": [
+      "16:             \"No token found. Either configure the `BLOB_READ_WRITE_TOKEN` \"",
+      "17:             \"or `VERCEL_BLOB_READ_WRITE_TOKEN` environment variable, \""
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\_internal\\blob\\__init__.py",
+    "keywords": [
+      "BLOB_READ_WRITE_TOKEN",
+      "VERCEL_BLOB_READ_WRITE_TOKEN"
+    ],
+    "lines": [
+      "368:     token = token or os.getenv(\"BLOB_READ_WRITE_TOKEN\") or os.getenv(\"VERCEL_BLOB_READ_WRITE_TOKEN\")"
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\_internal\\sandbox\\core.py",
+    "keywords": [
+      "oidc",
+      "OIDC"
+    ],
+    "lines": [
+      "106:     from vercel.oidc import decode_oidc_payload",
+      "109:         value = decode_oidc_payload(token).get(claim)",
+      "126:             from vercel.oidc import get_credentials"
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\_internal\\workflow\\worlds\\vercel.py",
+    "keywords": [
+      "VERCEL_OIDC_TOKEN",
+      "oidc",
+      "OIDC"
+    ],
+    "lines": [
+      "128:             from vercel.oidc.aio import get_vercel_oidc_token",
+      "130:             token = await get_vercel_oidc_token()"
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\_internal\\unstable\\sandbox\\options.py",
+    "keywords": [
+      "oidc",
+      "OIDC"
+    ],
+    "lines": [
+      "28:             from vercel.oidc.credentials import get_credentials"
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\workers\\_queue\\exceptions.py",
+    "keywords": [
+      "oidc",
+      "OIDC"
+    ],
+    "lines": [
+      "70:     \"\"\"Raised when we cannot resolve a queue token locally (env/OIDC).\"\"\""
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\workers\\_queue\\send.py",
+    "keywords": [
+      "VERCEL_OIDC_TOKEN",
+      "oidc",
+      "OIDC"
+    ],
+    "lines": [
+      "128:       3. The Vercel OIDC token from ``vercel.oidc.get_vercel_oidc_token``.",
+      "137:     from vercel.oidc import get_vercel_oidc_token",
+      "139:     token = get_vercel_oidc_token()",
+      "146:         \"or ensure a Vercel OIDC token is available in this environment.\"",
+      "158:       3. The Vercel OIDC token from ``vercel.oidc.aio.get_vercel_oidc_token``.",
+      "167:     from vercel.oidc.aio import get_vercel_oidc_token as get_vercel_oidc_token_async",
+      "169:     token = await get_vercel_oidc_token_async()",
+      "176:         \"or ensure a Vercel OIDC token is available in this environment.\""
+    ]
+  },
+  {
+    "path": "c:\\משפחת דהאן\\אורי\\מערכת תורים יעל\\.venv\\Lib\\site-packages\\vercel\\internal\\telemetry\\credentials.py",
+    "keywords": [
+      "oidc",
+      "OIDC"
+    ],
+    "lines": [
+      "5: from vercel.oidc import decode_oidc_payload",
+      "6: from vercel.oidc.utils import find_project_info",
+      "22:     3. OIDC token payload (if available)",
+      "39:     # Try to extract from OIDC token if available",
+      "42:             payload = decode_oidc_payload(token)",
+      "46:                 # OIDC tokens may have owner_id as team_id",
+      "49:             # Silently fail - OIDC may not be available or token may be invalid"
+    ]
+  }
+]

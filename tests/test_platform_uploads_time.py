@@ -84,7 +84,9 @@ def test_vercel_blob_upload_uses_blob_token_and_returns_url(monkeypatch):
 
     class FakeClient:
         def __init__(self, token=None):
-            assert token == "blob-token"
+            # The client is constructed without an explicit token; the SDK
+            # will resolve tokens from the environment or OIDC at runtime.
+            assert token is None
             self.token = token
             self.closed = False
 
