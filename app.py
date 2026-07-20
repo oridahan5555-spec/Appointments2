@@ -22,6 +22,100 @@ import google_calendar
 import mailer
 import notifications
 import storage
+import inspect
+import importlib.metadata
+import traceback
+
+
+@app.get("/api/debug/blob")
+async def debug_blob(request: Request):
+    info: dict = {}
+    # Environment flags
+    try:
+        is_vercel = bool(config.VERCEL)
+    except Exception:
+        is_vercel = bool(config.env("VERCEL"))
+    info["VERCEL"] = is_vercel
+
+    has_blob_token = bool(config.env("BLOB_READ_WRITE_TOKEN") or config.env("VERCEL_BLOB_READ_WRITE_TOKEN") or getattr(config, "BLOB_READ_WRITE_TOKEN", None))
+    info["BLOB_READ_WRITE_TOKEN_exists"] = bool(has_blob_token)
+
+    # vercel package version
+    try:
+        vercel_version = importlib.metadata.version("vercel")
+    except Exception as exc:
+        vercel_version = f"error: {exc!r}"
+    info["vercel_version"] = vercel_version
+
+    # AsyncBlobClient creation
+    from vercel.blob import AsyncBlobClient
+
+    try:
+        # Try instantiating without passing a token (SDK will resolve auth)
+        client_instance = AsyncBlobClient()
+        info["async_blob_client_created"] = True
+    except Exception as exc:
+        info["async_blob_client_created"] = False
+        info["async_blob_client_error"] = {
+            "type": type(exc).__name__,
+            "repr": repr(exc),
+            "traceback": traceback.format_exc(),
+        }
+
+    # Signature of put
+    try:
+        sig = str(inspect.signature(AsyncBlobClient.put))
+    except Exception as exc:
+        sig = f"error: {exc!r}"
+    info["async_blob_client_put_signature"] = sig
+
+    # Attempt upload of a tiny file and capture any error details
+    upload_info: dict = {}
+    try:
+        async with AsyncBlobClient() as client:
+            result = await client.put(
+                "debug/hello.txt",
+                b"hello\n",
+                access="private",
+                content_type="text/plain",
+                add_random_suffix=False,
+            )
+        upload_info["result"] = {
+            "repr": repr(result),
+            "url": getattr(result, "url", None),
+        }
+    except Exception as exc:
+        # Collect as much info as possible from the exception
+        err: dict = {
+            "type": type(exc).__name__,
+            "repr": repr(exc),
+            "str": str(exc),
+            "traceback": traceback.format_exc(),
+        }
+        # Common attributes to check for HTTP error details
+        for attr in ("status_code", "status", "response", "body", "text", "content", "raw"):
+            try:
+                val = getattr(exc, attr, None)
+            except Exception:
+                val = None
+            if val is None:
+                continue
+            try:
+                # If it's a requests/urllib3 response-like object
+                if hasattr(val, "text"):
+                    err[attr] = val.text
+                else:
+                    err[attr] = val
+            except Exception:
+                try:
+                    err[attr] = repr(val)
+                except Exception:
+                    err[attr] = "<unrepresentable>"
+
+        upload_info["error"] = err
+
+    info["upload_attempt"] = upload_info
+    return info
 
 logger = logging.getLogger("booking")
 
