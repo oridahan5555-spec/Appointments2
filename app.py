@@ -26,6 +26,27 @@ import inspect
 import importlib.metadata
 import traceback
 
+logger = logging.getLogger("booking")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    _app.state.startup_error = None
+    try:
+        config.validate_runtime_config()
+        db.init_db()
+        if not config.VERCEL:
+            config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        logger.exception("Application startup failed")
+        _app.state.startup_error = exc
+    yield
+
+
+app = FastAPI(title="Booking", docs_url=None, redoc_url=None, lifespan=lifespan)
+app.state.startup_error = None
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.ALLOWED_HOSTS)
+
 
 @app.get("/api/debug/blob")
 async def debug_blob(request: Request):
@@ -116,27 +137,6 @@ async def debug_blob(request: Request):
 
     info["upload_attempt"] = upload_info
     return info
-
-logger = logging.getLogger("booking")
-
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    _app.state.startup_error = None
-    try:
-        config.validate_runtime_config()
-        db.init_db()
-        if not config.VERCEL:
-            config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:
-        logger.exception("Application startup failed")
-        _app.state.startup_error = exc
-    yield
-
-
-app = FastAPI(title="Booking", docs_url=None, redoc_url=None, lifespan=lifespan)
-app.state.startup_error = None
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.ALLOWED_HOSTS)
 
 
 def bool_value(value) -> int:
