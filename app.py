@@ -1224,7 +1224,7 @@ async def upload(request: Request, file: UploadFile = File(...)):
     except storage.StorageUnavailableError:
         raise HTTPException(503, "אחסון התמונות אינו מוגדר") from None
     except Exception as exc:
-        logger.warning("Image upload failed type=%s", type(exc).__name__)
+        logger.exception("Owner image upload failed for owner=%s", session["token_hash"])
         raise HTTPException(502, "העלאת התמונה נכשלה. נסו שוב.") from None
     return {"url": url}
 

@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import re
@@ -71,6 +72,59 @@ def test_upload_rejects_anonymous_active_content_and_oversized_data(client, sess
     assert anonymous.status_code == 403
     assert active_content.status_code == 400
     assert oversized.status_code == 400
+
+
+def test_vercel_blob_upload_uses_blob_token_and_returns_url(monkeypatch):
+    uploaded = {}
+
+    class FakeResult:
+        def __init__(self, url):
+            self.url = url
+
+    class FakeClient:
+        def __init__(self, token=None):
+            assert token == "blob-token"
+            self.token = token
+            self.closed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            self.closed = True
+
+        async def put(
+            self,
+            path,
+            body,
+            *,
+            access,
+            content_type,
+            add_random_suffix=False,
+            overwrite=False,
+            cache_control_max_age=None,
+            multipart=False,
+            on_upload_progress=None,
+            token=None,
+        ):
+            assert path.startswith("business/")
+            assert len(body) > 0
+            assert access == "private"
+            assert content_type in {"image/png", "image/jpeg", "image/webp"}
+            assert add_random_suffix is False
+            assert overwrite is False
+            assert cache_control_max_age == 31536000
+            assert multipart is False
+            assert on_upload_progress is None
+            assert token is None
+            return FakeResult("https://blob.vercel.com/business/test.png")
+
+    monkeypatch.setattr(config, "BLOB_READ_WRITE_TOKEN", "blob-token")
+    monkeypatch.setattr(config, "VERCEL", True)
+    monkeypatch.setattr("storage.AsyncBlobClient", FakeClient)
+
+    result = asyncio.run(storage.save_public_image(png_bytes()))
+    assert result == "https://blob.vercel.com/business/test.png"
 
 
 def test_upload_path_traversal_and_unknown_names_return_404(client):

@@ -1,11 +1,14 @@
 import io
+import logging
 import secrets
 import warnings
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 import config
+from vercel.blob import AsyncBlobClient
 
+logger = logging.getLogger("booking")
 Image.MAX_IMAGE_PIXELS = 20_000_000
 
 
@@ -70,19 +73,31 @@ async def save_public_image(data: bytes) -> str:
     if config.VERCEL or config.BLOB_READ_WRITE_TOKEN:
         if not config.BLOB_READ_WRITE_TOKEN:
             raise StorageUnavailableError("Vercel Blob is not configured")
-        from vercel.blob import AsyncBlobClient
 
-        client = AsyncBlobClient(token=config.BLOB_READ_WRITE_TOKEN)
-        result = await client.put(
-            f"business/{filename}",
-            normalized,
-            access="public",
-            content_type=content_type,
-            add_random_suffix=False,
-            overwrite=False,
-            cache_control_max_age=31536000,
-        )
-        return str(result.url)
+        async with AsyncBlobClient(token=config.BLOB_READ_WRITE_TOKEN) as client:
+            try:
+                result = await client.put(
+                    f"business/{filename}",
+                    normalized,
+                    access="private",
+                    content_type=content_type,
+                    add_random_suffix=False,
+                    overwrite=False,
+                    cache_control_max_age=31536000,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Vercel Blob upload failed path=%s content_type=%s size=%s token_present=%s",
+                    f"business/{filename}",
+                    content_type,
+                    len(normalized),
+                    bool(config.BLOB_READ_WRITE_TOKEN),
+                )
+                raise
+
+        if not getattr(result, "url", None):
+            raise StorageUnavailableError("Vercel Blob did not return a URL")
+        return result.url
 
     config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
     target = config.UPLOAD_DIR / filename
