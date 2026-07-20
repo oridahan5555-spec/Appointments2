@@ -28,14 +28,20 @@ logger = logging.getLogger("booking")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    config.validate_runtime_config()
-    db.init_db()
-    if not config.VERCEL:
-        config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    _app.state.startup_error = None
+    try:
+        config.validate_runtime_config()
+        db.init_db()
+        if not config.VERCEL:
+            config.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        logger.exception("Application startup failed")
+        _app.state.startup_error = exc
     yield
 
 
 app = FastAPI(title="Booking", docs_url=None, redoc_url=None, lifespan=lifespan)
+app.state.startup_error = None
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=config.ALLOWED_HOSTS)
 
 
@@ -348,6 +354,12 @@ async def security_guard(request: Request, call_next):
         "/api/auth/verify",
         "/api/auth/verify-owner",
     }
+    startup_error = getattr(request.app.state, "startup_error", None)
+    if startup_error and request.url.path.startswith("/api/"):
+        return JSONResponse(
+            {"detail": f"Service unavailable: {startup_error}"},
+            status_code=503,
+        )
     try:
         session = None
         if request.url.path.startswith("/api/owner/"):
@@ -1239,3 +1251,9 @@ def run_reminders(request: Request):
 
 
 app.mount("/", StaticFiles(directory=config.BASE_DIR / "static", html=True), name="static")
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)
