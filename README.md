@@ -83,14 +83,15 @@ Google אינו מבטל את פעולת התור, והוא נשמר לניסי�
 
 ## תזכורות
 
-`vercel.json` קורא ל-`/api/cron/reminders` כל 15 דקות. Vercel שולח את
-`CRON_SECRET` כ-Bearer token והנתיב דוחה קריאה ללא התאמה מלאה.
+GitHub Actions קורא ל-`/api/cron/reminders` כל 15 דקות דרך
+`.github/workflows/reminders.yml`. ה-workflow שולח את `CRON_SECRET` כ-Bearer
+token; הנתיב דוחה קריאה ללא התאמה מלאה. אפשר גם להפעיל אותו ידנית עם
+`workflow_dispatch`.
 
-תוכנית Hobby של Vercel אינה מספיקה ללוח זמנים של כל 15 דקות. לפני השקה צריך
-לבחור אחת משתי אפשרויות:
-
-1. לעבור לתוכנית Vercel שתומכת בתדירות הזו.
-2. להשתמש בשירות scheduler חיצוני מאובטח ששולח את אותו Bearer token.
+ב-GitHub, פתח **Settings → Secrets and variables → Actions** והוסף repository
+secret בשם `CRON_SECRET`, עם אותו ערך שכבר הוגדר ב-Vercel. אפשר להגדיר repository
+variable בשם `PUBLIC_BASE_URL` עם כתובת האתר הציבורית; ברירת המחדל ב-workflow
+היא כתובת production יציבה של Vercel. ה-workflow נכשל אם התשובה אינה HTTP 2xx.
 
 ## משתני Vercel
 
@@ -148,7 +149,8 @@ GOOGLE_CALENDAR_ENABLED=true
 6. להיכנס לניהול עם `OWNER_EMAIL` ולחבר Google פעם אחת.
 7. לבצע תור בדיקה, לאשר, לשנות ולבטל אותו.
 8. לוודא מיילים, אירוע Google ותזכורת Cron בלוגים המסוננים.
-9. רק לאחר הבדיקות לפתוח את האתר ללקוחות אמיתיים.
+9. לוודא ש-GitHub Actions מפעיל תזכורות כל 15 דקות.
+10. רק לאחר הבדיקות לפתוח את האתר ללקוחות אמיתיים.
 
 ## שחזור ו-Rollback
 

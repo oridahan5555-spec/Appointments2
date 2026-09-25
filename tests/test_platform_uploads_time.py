@@ -308,7 +308,16 @@ def test_vercel_and_postgres_production_contracts_are_present():
     vercel = json.loads((config.BASE_DIR / "vercel.json").read_text(encoding="utf-8"))
     postgres_schema = (config.BASE_DIR / "schema_postgres.sql").read_text(encoding="utf-8")
 
-    assert vercel["crons"] == [{"path": "/api/cron/reminders", "schedule": "*/15 * * * *"}]
+    assert "crons" not in vercel
+    workflow = (config.BASE_DIR / ".github/workflows/reminders.yml").read_text(
+        encoding="utf-8"
+    )
+    assert 'cron: "*/15 * * * *"' in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "${{ vars.PUBLIC_BASE_URL" in workflow
+    assert "${{ secrets.CRON_SECRET }}" in workflow
+    assert "--header @-" in workflow
+    assert "2[0-9][0-9]" in workflow
     assert "schema_postgres.sql" in vercel["builds"][0]["config"]["includeFiles"]
     assert (config.BASE_DIR / ".python-version").read_text().strip() == "3.12"
     assert "EXCLUDE USING gist" in postgres_schema

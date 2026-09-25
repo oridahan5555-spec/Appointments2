@@ -14,11 +14,5 @@
       "src": "/(.*)",
       "dest": "/app.py"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/reminders",
-      "schedule": "*/15 * * * *"
-    }
   ]
 }
