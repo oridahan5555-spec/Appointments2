@@ -478,11 +478,15 @@ async def security_guard(request: Request, call_next):
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
     response.headers["Cross-Origin-Opener-Policy"] = "same-origin"
     response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; script-src 'self'; "
+        "default-src 'self'; script-src 'self' "
+        "https://enterprise-ai-pilot-module1.oridahan7777.workers.dev; "
         "style-src 'self' https://fonts.googleapis.com; "
         "style-src-attr 'unsafe-inline'; "
         "font-src 'self' https://fonts.gstatic.com; "
-        "img-src 'self' data: https:; connect-src 'self'; "
+        "img-src 'self' data: https:; connect-src 'self' "
+        "https://enterprise-ai-pilot-module1.oridahan7777.workers.dev; "
+        "frame-src 'self' "
+        "https://enterprise-ai-pilot-module1.oridahan7777.workers.dev; "
         "object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
     )
     response.headers["X-Request-ID"] = request.state.request_id

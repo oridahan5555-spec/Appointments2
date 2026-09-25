@@ -10,7 +10,14 @@ def test_application_starts_and_sets_security_headers(client):
     assert response.status_code == 200
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-frame-options"] == "DENY"
-    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
+    csp = response.headers["content-security-policy"]
+    widget_origin = "https://enterprise-ai-pilot-module1.oridahan7777.workers.dev"
+    assert f"script-src 'self' {widget_origin}" in csp
+    assert f"connect-src 'self' {widget_origin}" in csp
+    assert f"frame-src 'self' {widget_origin}" in csp
+    assert "default-src 'self'" in csp
+    assert "object-src 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-request-id"]
     assert "access-control-allow-origin" not in response.headers
