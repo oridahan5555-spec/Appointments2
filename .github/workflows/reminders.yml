@@ -1,0 +1,48 @@
+name: Appointment reminders
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  send-reminders:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call reminder endpoint
+        shell: bash
+        env:
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL || 'https://appointments2-yael-nails.vercel.app' }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$PUBLIC_BASE_URL" ]]; then
+            echo "::error::Set the PUBLIC_BASE_URL Actions variable or use the configured production default."
+            exit 1
+          fi
+          if [[ -z "$CRON_SECRET" ]]; then
+            echo "::error::Set the CRON_SECRET Actions repository secret."
+            exit 1
+          fi
+          if [[ "$PUBLIC_BASE_URL" != https://* ]]; then
+            echo "::error::PUBLIC_BASE_URL must use HTTPS."
+            exit 1
+          fi
+
+          url="${PUBLIC_BASE_URL%/}/api/cron/reminders"
+          http_code="$(
+            printf 'Authorization: Bearer %s\n' "$CRON_SECRET" |
+              curl --silent --show-error --max-time 60 \
+                --output /dev/null --write-out '%{http_code}' \
+                --request GET --header @- -- "$url"
+          )"
+
+          if [[ ! "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+            echo "::error::Reminder endpoint returned HTTP $http_code; expected 2xx."
+            exit 1
+          fi
+          echo "Reminder endpoint returned HTTP $http_code."
